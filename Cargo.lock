@@ -4072,9 +4072,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rustypot"
-version = "1.8.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39a0c413607b5e70a9535110885e131e778e5e515bcded41380c04f2ee4deac5"
+checksum = "3771fb5c072caa6761ec9a5a9844137ce41d67d40d551e7a34ab66bfed02c082"
 dependencies = [
  "clap",
  "env_logger",
@@ -4630,7 +4630,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -155,10 +155,7 @@ pub fn alarms(r: &RobotReport) -> Vec<Alarm> {
             push(
                 "motors",
                 Level::Warn,
-                format!(
-                    "motor bus: {} read failures running",
-                    h.bus.consecutive_errors
-                ),
+                format!("motor bus: {}", h.bus.describe_run()),
             );
         }
         if let Some(imu) = &h.imu {
@@ -643,6 +640,14 @@ fn render_robot(frame: &mut ratatui::Frame, v: &View, area: Rect) {
                 Some(a) => Span::styled(a.text.clone(), a.level.style()),
                 None => Span::styled("bus ok", Style::new().fg(Color::Green)),
             });
+            // Drops since start: none of them is an alarm, all of them are where to look.
+            if h.bus.total_drops() > 0 {
+                motors.push(dim(format!(
+                    " · {} dropped: {}",
+                    h.bus.total_drops(),
+                    h.bus.describe_drops()
+                )));
+            }
             lines.push(row("motors", motors));
         }
     }
@@ -963,6 +968,25 @@ mod tests {
         assert!(alarms(&healthy).is_empty());
         // Nothing known is nothing wrong — not an empty battery.
         assert!(alarms(&RobotReport::default()).is_empty());
+    }
+
+    /// The device is the finding: "1 read failure" alone says the bus dropped a read, not where.
+    #[test]
+    fn a_bus_drop_names_the_device_it_stopped_at() {
+        let report = RobotReport {
+            health: Some(proto::HealthResult {
+                healthy: true,
+                bus: proto::BusHealth {
+                    consecutive_errors: 1,
+                    failing: vec![proto::IMU_DXL_ID],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let texts: Vec<_> = alarms(&report).into_iter().map(|a| a.text).collect();
+        assert_eq!(texts, ["motor bus: 1 read failure running, at 200 imu"]);
     }
 
     #[test]

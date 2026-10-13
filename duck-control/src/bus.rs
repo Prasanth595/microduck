@@ -395,7 +395,7 @@ impl DynamixelIo {
         let values = self
             .controller
             .sync_read_present_position(&JOINT_IDS)
-            .map_err(|e| IoError::Bus(format!("read present positions: {e}")))?;
+            .map_err(|e| sync_read_error("read present positions", e))?;
         if values.len() != NUM_JOINTS {
             return Err(IoError::ShortRead {
                 what: "present positions",
@@ -515,7 +515,7 @@ impl RobotIo for DynamixelIo {
         let blocks = self
             .controller
             .sync_read_raw_data(&self.ids, READ_ADDR, READ_LEN)
-            .map_err(|e| IoError::Bus(format!("combined imu+motor sync_read: {e}")))?;
+            .map_err(|e| sync_read_error("combined imu+motor sync_read", e))?;
 
         if blocks.len() != self.ids.len() {
             return Err(IoError::ShortRead {
@@ -630,7 +630,7 @@ impl RobotIo for DynamixelIo {
         let blocks = self
             .controller
             .sync_read_raw_data(&JOINT_IDS, SLOW_READ_ADDR, SLOW_READ_LEN)
-            .map_err(|e| IoError::Bus(format!("voltage+temperature sync_read: {e}")))?;
+            .map_err(|e| sync_read_error("voltage+temperature sync_read", e))?;
 
         if blocks.len() != NUM_JOINTS {
             return Err(IoError::ShortRead {
@@ -724,6 +724,18 @@ impl RobotIo for DynamixelIo {
     }
 }
 
+/// A failed sync read, keeping the device the bus says it stopped at.
+fn sync_read_error(what: &'static str, e: Box<dyn std::error::Error>) -> IoError {
+    match e.downcast_ref::<rustypot::SyncReadError>() {
+        Some(at) => IoError::Device {
+            what,
+            id: at.id,
+            cause: at.cause.to_string(),
+        },
+        None => IoError::Bus(format!("{what}: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,6 +754,27 @@ mod tests {
     /// The block parsed per servo must cover current, velocity and position without
     /// overrunning. If `READ_LEN` and the offsets below ever disagree, joints get each
     /// other's values — which reads as a wiring fault, not a code bug.
+    #[test]
+    fn a_sync_read_failure_keeps_the_device_it_stopped_at() {
+        let at = rustypot::SyncReadError {
+            id: IMU_DXL_ID,
+            cause: Box::new(rustypot::CommunicationErrorKind::ParsingError),
+        };
+        let e = sync_read_error("combined imu+motor sync_read", Box::new(at));
+        assert_eq!(e.device(), Some(IMU_DXL_ID));
+        assert_eq!(
+            e.to_string(),
+            "bus transaction failed: combined imu+motor sync_read: device 200: Parsing error"
+        );
+
+        // The port itself is nobody's.
+        let e = sync_read_error(
+            "combined imu+motor sync_read",
+            Box::new(std::io::Error::other("unplugged")),
+        );
+        assert_eq!(e.device(), None);
+    }
+
     #[test]
     fn read_block_is_long_enough_for_every_field() {
         assert_eq!(READ_LEN as usize, IMU_BLOCK_LEN);

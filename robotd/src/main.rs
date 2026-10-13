@@ -551,6 +551,15 @@ struct RobotState {
     achieved_hz: AtomicU64,
     /// Consecutive failed bus reads. Reset by any success.
     consecutive_errors: AtomicU32,
+    /// The devices this run of failed reads stopped at, once each — `BusHealth::failing`.
+    /// Emptied with `consecutive_errors`; written only by a failure and by the success that
+    /// ends a run, so an ordinary tick never touches it.
+    bus_failing: ArcSwap<Vec<u8>>,
+    /// Every failed read since startup, by the device it stopped at — `BusHealth::drops`.
+    /// Written only by a failure.
+    bus_drops: ArcSwap<std::collections::BTreeMap<u8, u64>>,
+    /// The failed reads the bus could not pin on a device — `BusHealth::unnamed_drops`.
+    bus_unnamed_drops: AtomicU64,
     /// Failed attempts to bring the bus up — opening it, verifying its registers, or
     /// reading the startup pose. Non-zero means the loop is still waiting for a robot to
     /// answer and has never commanded anything.
@@ -732,6 +741,9 @@ impl RobotState {
             last_tick_us: AtomicU64::new(0),
             achieved_hz: AtomicU64::new(0),
             consecutive_errors: AtomicU32::new(0),
+            bus_failing: ArcSwap::from_pointee(Vec::new()),
+            bus_drops: ArcSwap::from_pointee(Default::default()),
+            bus_unnamed_drops: AtomicU64::new(0),
             startup_bus_failures: AtomicU32::new(0),
             startup_missing: ArcSwap::from_pointee(Vec::new()),
             startup_imu_missing: AtomicBool::new(false),
@@ -783,6 +795,37 @@ impl RobotState {
         }
     }
 
+    /// A good bus read: the run of failures, if there was one, is over.
+    fn bus_read_ok(&self) {
+        if self.consecutive_errors.swap(0, Ordering::Relaxed) > 0 {
+            self.bus_failing.store(Arc::new(Vec::new()));
+        }
+    }
+
+    /// A failed bus read, and the device the bus pinned it on if it could. The run's length.
+    fn bus_read_failed(&self, device: Option<u8>) -> u32 {
+        match device {
+            Some(id) => {
+                if !self.bus_failing.load().contains(&id) {
+                    self.bus_failing.rcu(|failing| {
+                        let mut failing = Vec::clone(failing);
+                        failing.push(id);
+                        failing
+                    });
+                }
+                self.bus_drops.rcu(|drops| {
+                    let mut drops = std::collections::BTreeMap::clone(drops);
+                    *drops.entry(id).or_default() += 1;
+                    drops
+                });
+            }
+            None => {
+                self.bus_unnamed_drops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     fn health(&self) -> proto::HealthResult {
         // Everything the robot can say about itself, attached to every answer whatever the
         // verdict — and consulted by none of the checks below.
@@ -810,6 +853,9 @@ impl RobotState {
                     consecutive_errors: self.consecutive_errors.load(Ordering::Relaxed),
                     startup_failures: self.startup_bus_failures.load(Ordering::Relaxed),
                     missing: self.startup_missing.load().as_ref().clone(),
+                    failing: self.bus_failing.load().as_ref().clone(),
+                    drops: self.bus_drops.load().as_ref().clone(),
+                    unnamed_drops: self.bus_unnamed_drops.load(Ordering::Relaxed),
                 },
                 imu: Some(proto::ImuHealth {
                     ready: self.imu_ready.load(Ordering::Relaxed),
@@ -905,7 +951,18 @@ impl RobotState {
 
         let errors = self.consecutive_errors.load(Ordering::Relaxed);
         if errors >= self.max_consecutive_errors {
-            return unhealthy(format!("{errors} consecutive bus read failures"));
+            let bus = proto::BusHealth {
+                failing: self.bus_failing.load().as_ref().clone(),
+                ..Default::default()
+            };
+            return unhealthy(if bus.failing.is_empty() {
+                format!("{errors} consecutive bus read failures")
+            } else {
+                format!(
+                    "{errors} consecutive bus read failures, at {}",
+                    bus.describe_failing()
+                )
+            });
         }
 
         // A wedged loop stops stamping. This is what turns a hung control thread into an
@@ -2363,12 +2420,12 @@ async fn control_loop<T: RobotIo>(
         let read_at = proto::clock::monotonic_ns();
         let fresh = match safety.read() {
             Ok(sensors) => {
-                state.consecutive_errors.store(0, Ordering::Relaxed);
+                state.bus_read_ok();
                 sensors_read_ns = read_at;
                 Some(sensors)
             }
             Err(e) => {
-                let n = state.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
+                let n = state.bus_read_failed(e.device());
                 bus_drops_window += 1;
 
                 // A run of them is a fault, and stays as loud as it was: every tenth, at once.
@@ -6492,6 +6549,42 @@ mod tests {
         let health = s.health();
         assert!(!health.healthy);
         assert!(health.reason.unwrap().contains("consecutive"));
+    }
+
+    /// A run names each device it stopped at once, and the good read ending it forgets them —
+    /// "running" means now, for the devices as for the count.
+    #[test]
+    fn a_run_of_bus_failures_names_its_devices_until_it_ends() {
+        let s = state();
+        ticked(&s, 100);
+        assert_eq!(s.bus_read_failed(Some(200)), 1);
+        assert_eq!(s.bus_read_failed(None), 2);
+        assert_eq!(s.bus_read_failed(Some(34)), 3);
+        assert_eq!(s.bus_read_failed(Some(200)), 4);
+        let bus = s.health().bus;
+        assert_eq!((bus.consecutive_errors, bus.failing), (4, vec![200, 34]));
+
+        s.bus_read_ok();
+        let bus = s.health().bus;
+        assert_eq!((bus.consecutive_errors, bus.failing), (0, vec![]));
+        // The run is over; what it dropped is not forgotten.
+        assert_eq!(bus.drops, [(34, 1), (200, 2)].into());
+        assert_eq!(bus.unnamed_drops, 1);
+
+        s.bus_read_failed(Some(34));
+        assert_eq!(s.health().bus.drops, [(34, 2), (200, 2)].into());
+    }
+
+    /// The update gate quotes this reason when it rolls a release back, so it names the device.
+    #[test]
+    fn sustained_bus_failures_name_where_they_stop() {
+        let s = state();
+        ticked(&s, 100);
+        for _ in 0..10 {
+            s.bus_read_failed(Some(34));
+        }
+        let reason = s.health().reason.unwrap();
+        assert!(reason.ends_with("failures, at 34 mouth"), "{reason}");
     }
 
     /// `--unhealthy` must win over a healthy loop: it exists to exercise rollback.

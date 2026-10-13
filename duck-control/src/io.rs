@@ -59,6 +59,15 @@ pub enum IoError {
     },
     #[error("bus transaction failed: {0}")]
     Bus(String),
+    /// A sync read the bus says went wrong at one device's answer — which device, from what
+    /// arrived (`rustypot`'s `SyncReadError`). The device is where the answer broke, not proof
+    /// the rest are fine: see `duck_ipc_proto::BusHealth::failing`.
+    #[error("bus transaction failed: {what}: device {id}: {cause}")]
+    Device {
+        what: &'static str,
+        id: u8,
+        cause: String,
+    },
     /// A `sync_read` that returns the wrong number of blocks, or a block of the wrong
     /// length, means a device did not answer. Reported rather than papered over: a
     /// silently short read would leave stale values in half the joint array.
@@ -70,6 +79,16 @@ pub enum IoError {
     },
     #[error("simulated failure")]
     Simulated,
+}
+
+impl IoError {
+    /// The device the bus pinned this failure on, when it could.
+    pub fn device(&self) -> Option<u8> {
+        match self {
+            Self::Device { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, IoError>;

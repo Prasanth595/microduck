@@ -97,8 +97,9 @@ pub fn mouth_target(open: f64) -> f64 {
 }
 
 /// The `imu_to_dxl` v2 board's Dynamixel ID. It rides the motor bus and is read in the
-/// same transaction as the servos ([`crate::bus`]).
-pub const IMU_DXL_ID: u8 = 200;
+/// same transaction as the servos ([`crate::bus`]). Protocol, so a client naming a device a
+/// failed read stopped at uses the same number.
+pub use duck_ipc_proto::IMU_DXL_ID;
 
 pub const BAUD_RATE: u32 = 1_000_000;
 

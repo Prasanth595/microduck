@@ -2217,11 +2217,20 @@ impl View {
         // the temperatures for no information.
         if health.bus.consecutive_errors > 0 {
             said.push(Span::styled(
-                format!(
-                    " · bus {} read failures running",
-                    health.bus.consecutive_errors
-                ),
+                format!(" · bus {}", health.bus.describe_run()),
                 Style::new().fg(Color::Yellow),
+            ));
+        }
+        // Every drop since start, by device: a single drop is over within a tick, and a refresh
+        // later only these totals say it happened.
+        if health.bus.total_drops() > 0 {
+            said.push(Span::styled(
+                format!(
+                    " · bus {} dropped: {}",
+                    health.bus.total_drops(),
+                    health.bus.describe_drops()
+                ),
+                Style::new().add_modifier(Modifier::DIM),
             ));
         }
 

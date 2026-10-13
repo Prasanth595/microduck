@@ -73,6 +73,8 @@ pub struct Notices {
     alarms: Vec<(&'static str, panel::Level)>,
     /// The last refusal said, and when the robot made it.
     refused: Option<(String, String, Instant)>,
+    /// The bus's drop totals as last seen, `None` before the first report carrying health.
+    drops: Option<(std::collections::BTreeMap<u8, u64>, u64)>,
 }
 
 impl Notices {
@@ -149,6 +151,10 @@ impl Notices {
         }
         self.alarms = now.iter().map(|a| (a.key, a.level)).collect();
 
+        if let Some(h) = &report.health {
+            lines.extend(self.drops(&h.bus));
+        }
+
         if let Some(r) = &report.refused {
             let happened = at
                 .checked_sub(Duration::from_millis(r.ago_ms))
@@ -164,6 +170,57 @@ impl Notices {
                 lines.push(format!("refused: {} — {}", r.method, r.reason));
                 self.refused = Some((r.method.clone(), r.reason.clone(), happened));
             }
+        }
+        lines
+    }
+
+    /// A line for each device whose drop total went up since the last report — every drop, even
+    /// the ones over between two reports, which is why totals and not the running count.
+    ///
+    /// The first report says what is already there, in one line. A total going down is `robotd`
+    /// restarted, and its totals are said again the same way.
+    fn drops(&mut self, bus: &duck_ipc_proto::BusHealth) -> Vec<String> {
+        let now = (bus.drops.clone(), bus.unnamed_drops);
+        let was = self.drops.replace(now.clone()).filter(|(drops, unnamed)| {
+            *unnamed <= now.1
+                && drops
+                    .iter()
+                    .all(|(id, n)| now.0.get(id).is_some_and(|m| m >= n))
+        });
+        let Some((was, was_unnamed)) = was else {
+            let total = bus.total_drops();
+            return if total == 0 {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "⚠ motor bus: {total} read{} dropped since robotd started — {}",
+                    if total == 1 { "" } else { "s" },
+                    bus.describe_drops()
+                )]
+            };
+        };
+        let dropped = |by: u64, at: String, total: u64| {
+            let what = if by == 1 {
+                "read dropped".to_owned()
+            } else {
+                format!("{by} reads dropped")
+            };
+            format!("⚠ motor bus: {what} at {at} ({total} since robotd started)")
+        };
+        let mut lines: Vec<String> = bus
+            .drops
+            .iter()
+            .filter_map(|(&id, &n)| {
+                let by = n - was.get(&id).copied().unwrap_or(0);
+                (by > 0).then(|| dropped(by, duck_ipc_proto::describe_device(id), n))
+            })
+            .collect();
+        if bus.unnamed_drops > was_unnamed {
+            lines.push(dropped(
+                bus.unnamed_drops - was_unnamed,
+                "an unknown device".to_owned(),
+                bus.unnamed_drops,
+            ));
         }
         lines
     }
@@ -610,6 +667,44 @@ mod tests {
             "the same one"
         );
         assert_eq!(n.robot(&refused(50), at(7_000)).len(), 1, "a new one");
+    }
+
+    /// A drop holds the running count for one tick; the totals are what a report a second
+    /// apart can still see.
+    #[test]
+    fn every_bus_drop_gets_a_line_even_between_reports() {
+        use duck_ipc_proto as proto;
+        let at = |ms| Instant::now() + Duration::from_millis(ms);
+        let drops = |drops: &[(u8, u64)]| RobotReport {
+            health: Some(proto::HealthResult {
+                healthy: true,
+                bus: proto::BusHealth {
+                    drops: drops.iter().copied().collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut n = Notices::default();
+        assert_eq!(
+            n.robot(&drops(&[(20, 2)]), at(0)),
+            ["⚠ motor bus: 2 reads dropped since robotd started — 20 left_hip_yaw ×2"]
+        );
+        assert!(n.robot(&drops(&[(20, 2)]), at(1_000)).is_empty());
+        assert_eq!(
+            n.robot(&drops(&[(20, 2), (32, 1)]), at(2_000)),
+            ["⚠ motor bus: read dropped at 32 head_yaw (1 since robotd started)"]
+        );
+        assert_eq!(
+            n.robot(&drops(&[(20, 4), (32, 1)]), at(3_000)),
+            ["⚠ motor bus: 2 reads dropped at 20 left_hip_yaw (4 since robotd started)"]
+        );
+        // robotd restarted: its totals start again, and are said again.
+        assert_eq!(
+            n.robot(&drops(&[(200, 1)]), at(4_000)),
+            ["⚠ motor bus: 1 read dropped since robotd started — 200 imu ×1"]
+        );
     }
 
     #[test]

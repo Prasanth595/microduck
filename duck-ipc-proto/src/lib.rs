@@ -457,7 +457,19 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// [`method::ROBOT_VETBOOK`] and [`method::ROBOT_VETBOOK_NOTE`]: the robot's lifetime record —
 /// hours on, distance walked, falls and pickups, every servo `robotd` has adopted and how long
 /// the one before it lasted, and dated notes ([`vetbook`]). New routes: a `robotd` predating them answers METHOD_NOT_FOUND, by name.
-pub const API_VERSION: u32 = 42;
+///
+/// # v43 — which device a run of failed bus reads stopped at
+///
+/// [`BusHealth::failing`]: the device each failed read of the current run was pinned on — a servo,
+/// or the IMU board. "motor bus: 1 read failures running" said the bus dropped a read and not
+/// where, and on a robot whose drops are all one device's, the device is the whole finding.
+///
+/// [`BusHealth::drops`] and [`BusHealth::unnamed_drops`]: every failed read since `robotd`
+/// started, by device. A count that resets on the next good read is invisible to a client
+/// sampling once a second; a total that only grows is not.
+///
+/// Additive: absent from an older `robotd`, and empty reads as "not told".
+pub const API_VERSION: u32 = 43;
 
 /// The observation width every policy this robot family runs is built against.
 ///
@@ -585,6 +597,11 @@ pub const JOINT_IDS: [u8; 15] = [
     30, 31, 32, 33, 34, // neck, head, mouth
     10, 11, 12, 13, 14, // right leg
 ];
+
+/// The IMU board's Dynamixel ID. It rides the motor bus and answers first in the combined read, so
+/// it is a device [`BusHealth::failing`] can name. `duck-control` re-exports it, as it does
+/// [`JOINT_IDS`].
+pub const IMU_DXL_ID: u8 = 200;
 
 /// The joint a Dynamixel ID drives, if it is one of [`JOINT_IDS`].
 pub fn joint_of(id: u8) -> Option<&'static str> {
@@ -3689,6 +3706,24 @@ pub struct BusHealth {
     /// unplugged, and naming them is the point.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<u8>,
+    /// While `consecutive_errors` is non-zero: the device each failed read of the run stopped at,
+    /// once each, in the order first seen — a servo ID, or [`IMU_DXL_ID`]. Emptied with the count.
+    ///
+    /// The read is one transaction for every device, so this is where the answer went wrong, not
+    /// a proof the others are fine: a cable that breaks at one device silences every one past
+    /// it, and the first silent one is the one named. A failure the bus could not pin on a device
+    /// (the port itself) adds nothing, so a run can be counted with nobody named.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failing: Vec<u8>,
+    /// Failed reads since `robotd` started, by the device each stopped at — a servo ID, or
+    /// [`IMU_DXL_ID`]. Only ever grows, and that is the point: an isolated drop holds
+    /// `consecutive_errors` for one 20 ms tick, which a client sampling health once a second sees
+    /// one time in fifty. A total that went up says a drop happened in between, and where.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub drops: std::collections::BTreeMap<u8, u64>,
+    /// Failed reads since `robotd` started that the bus could not pin on a device.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unnamed_drops: u64,
 }
 
 impl BusHealth {
@@ -3700,15 +3735,60 @@ impl BusHealth {
 
     /// The missing servos as people read them: `32 head_yaw, 33 head_roll`.
     pub fn describe_missing(&self) -> String {
-        self.missing
-            .iter()
-            .map(|&id| match joint_of(id) {
-                Some(joint) => format!("{id} {joint}"),
-                None => id.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
+        describe_devices(&self.missing)
     }
+
+    /// The devices the current run of failures stopped at, the same way: `200 imu, 34 mouth`.
+    pub fn describe_failing(&self) -> String {
+        describe_devices(&self.failing)
+    }
+
+    /// Every failed read since `robotd` started.
+    pub fn total_drops(&self) -> u64 {
+        self.drops.values().sum::<u64>() + self.unnamed_drops
+    }
+
+    /// Where the reads since `robotd` started dropped: `20 left_hip_yaw ×2, 32 head_yaw ×1`.
+    pub fn describe_drops(&self) -> String {
+        let mut by_device: Vec<String> = self
+            .drops
+            .iter()
+            .map(|(&id, n)| format!("{} ×{n}", describe_device(id)))
+            .collect();
+        if self.unnamed_drops > 0 {
+            by_device.push(format!("unknown device ×{}", self.unnamed_drops));
+        }
+        by_device.join(", ")
+    }
+
+    /// The current run of failed reads, for a client to show while `consecutive_errors` is
+    /// non-zero: `3 read failures running, at 200 imu`.
+    pub fn describe_run(&self) -> String {
+        let n = self.consecutive_errors;
+        let run = format!("{n} read failure{} running", if n == 1 { "" } else { "s" });
+        if self.failing.is_empty() {
+            run
+        } else {
+            format!("{run}, at {}", self.describe_failing())
+        }
+    }
+}
+
+/// A bus device as people read it: the ID printed on the part, and what it is — `34 mouth`,
+/// `200 imu`.
+pub fn describe_device(id: u8) -> String {
+    match joint_of(id) {
+        Some(joint) => format!("{id} {joint}"),
+        None if id == IMU_DXL_ID => format!("{id} imu"),
+        None => id.to_string(),
+    }
+}
+
+fn describe_devices(ids: &[u8]) -> String {
+    ids.iter()
+        .map(|&id| describe_device(id))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The IMU board, which rides the motor bus.
@@ -6607,6 +6687,43 @@ mod tests {
 
         assert_eq!(answer.bus.consecutive_errors, 2);
         assert_eq!(answer.bus.startup_failures, 0);
+    }
+
+    #[test]
+    fn the_devices_a_run_stopped_at_name_the_imu_board_too() {
+        let bus = BusHealth {
+            consecutive_errors: 2,
+            failing: vec![IMU_DXL_ID, 34, 99],
+            ..BusHealth::default()
+        };
+        assert_eq!(bus.describe_failing(), "200 imu, 34 mouth, 99");
+        assert_eq!(
+            bus.describe_run(),
+            "2 read failures running, at 200 imu, 34 mouth, 99"
+        );
+        let unnamed = BusHealth {
+            consecutive_errors: 1,
+            ..BusHealth::default()
+        };
+        assert_eq!(unnamed.describe_run(), "1 read failure running");
+
+        let drops = BusHealth {
+            drops: [(32, 1), (20, 2)].into(),
+            unnamed_drops: 1,
+            ..BusHealth::default()
+        };
+        assert_eq!(drops.total_drops(), 4);
+        assert_eq!(
+            drops.describe_drops(),
+            "20 left_hip_yaw ×2, 32 head_yaw ×1, unknown device ×1"
+        );
+        // A map keyed by ID crosses JSON with string keys, and comes back the same.
+        let json = serde_json::to_string(&drops).unwrap();
+        assert!(json.contains(r#""drops":{"20":2,"32":1}"#), "{json}");
+        assert_eq!(serde_json::from_str::<BusHealth>(&json).unwrap(), drops);
+        // Not told is not serialised: an older client sees the section it always did.
+        let json = serde_json::to_string(&BusHealth::default()).unwrap();
+        assert!(!json.contains("failing"), "{json}");
     }
 
     /// An absent battery must stay absent, not become zero volts.
