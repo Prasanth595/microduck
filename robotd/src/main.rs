@@ -4491,6 +4491,7 @@ fn skills_report(state: &RobotState) -> proto::SkillsResult {
                 path: skill.path.as_ref().map(|p| p.display().to_string()),
                 duration: Some(skill.duration),
                 command: Some(skill.command),
+                live: Some(skill.live.iter().map(|b| b.as_str().to_owned()).collect()),
                 unwind: Some(skill.unwind),
                 unwind_s: Some(skill.unwind_s),
                 chain: Some(skill.chain),
@@ -4571,6 +4572,18 @@ fn set_skill_request(
         Some(path) => Some(std::path::PathBuf::from(path)),
         None => existing.as_ref().and_then(|s| s.path.clone()),
     };
+    // Refused before the file is touched, on the same grounds as `policy add`: a block this
+    // daemon cannot feed would leave the skill on zeros where it asked for a command.
+    let live = match &p.live {
+        Some(names) => match params::LiveBlock::parse_list(names) {
+            Ok(live) => live,
+            Err(e) => return proto::IntentResult::refused(e),
+        },
+        None => existing
+            .as_ref()
+            .map(|s| s.live.clone())
+            .unwrap_or_default(),
+    };
     // **Through the same gate `robot.loadPolicy` puts a slot's file through**, and for a sharper
     // reason here: a skill is not one of `Slot::ALL`, so the startup check that drops an
     // unloadable *slot* override never looks at it. Without this, a skill pointed at something
@@ -4602,6 +4615,7 @@ fn set_skill_request(
             .command
             .or(existing.as_ref().map(|s| s.command))
             .unwrap_or_default(),
+        live,
         unwind: p
             .unwind
             .or(existing.as_ref().map(|s| s.unwind))
@@ -5699,6 +5713,52 @@ mod tests {
         );
         assert!(!result.accepted);
         assert!(result.reason.unwrap_or_default().contains("no such file"));
+    }
+
+    /// `live` is set, kept by a call that leaves it out — retuning a dome skill's hold must not
+    /// quietly put its head back on zeros — and refused for a block the loop cannot feed.
+    #[test]
+    fn a_skills_live_blocks_are_set_kept_and_checked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let onnx = dir.path().join("dome.onnx");
+        std::fs::write(&onnx, b"not really an onnx").expect("write");
+        let (_cfg, state) = state_over("");
+        let intents = Intents::default();
+        let set = |p: proto::SkillParams| set_skill_request(&p, &state, &intents);
+
+        let added = set(proto::SkillParams {
+            name: "on-dome".to_owned(),
+            path: Some(onnx.display().to_string()),
+            duration: Some(10.0),
+            live: Some(vec!["head".to_owned()]),
+            ..Default::default()
+        });
+        assert!(added.accepted, "{added:?}");
+        let retuned = set(proto::SkillParams {
+            name: "on-dome".to_owned(),
+            duration: Some(5.0),
+            ..Default::default()
+        });
+        assert!(retuned.accepted, "{retuned:?}");
+        let refused = set(proto::SkillParams {
+            name: "on-dome".to_owned(),
+            live: Some(vec!["twist".to_owned()]),
+            ..Default::default()
+        });
+        assert!(!refused.accepted);
+
+        let report = skills_report(&state);
+        let skill = report
+            .skills
+            .iter()
+            .find(|s| s.name == "on-dome")
+            .expect("listed");
+        assert_eq!(skill.duration, Some(5.0), "the retune landed");
+        assert_eq!(
+            skill.live,
+            Some(vec!["head".to_owned()]),
+            "and kept the head"
+        );
     }
 
     /// The two the daemon drives itself may not become table entries: an entry answering to

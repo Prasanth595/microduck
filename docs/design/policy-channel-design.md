@@ -558,14 +558,23 @@ toggle already had: latched, then a timed rise before handing back, because drop
 does not instantly make a robot stand. Both default to nothing, so the common case declares
 neither.
 
-Head and body are zeroed for every skill, whatever the phase — every one-shot published so far
+Head and body are zeroed for a skill, whatever the phase — every one-shot published so far
 declares them unused, and a policy trained with `zero_command_padding` expects exactly that. Only
 the twist differs, and for most skills it is zero too.
 
+**Unless the skill names them in `live`.** A perpetual skill held for a person-chosen time is not
+always a pose that ignores the head: a policy that stands on a dome and tracks the head command was
+trained with that block live, and zeroing it left the console's head controls doing nothing for as
+long as it ran, with nothing saying why. So a skill may declare `live = ["head"]` (or `"body"`), from
+the manifest's `command.live` ([policy-manifest.md](../policy-manifest.md) owns the field), and the
+loop feeds it the caller's block in both the window and the unwind. Opt-in, because a kick fed a
+head slider it never trained on is a robot moving plausibly and wrongly.
+
 **A skill's twist is unsmoothed by construction.** The EMA is applied to the *client's* command on
-its way in, and a skill never reads that — the loop builds a fresh command block. Which is why a
+its way in, and a skill never reads that twist — the loop builds a fresh one. Which is why a
 policy reading a flag rather than a velocity needs no `cmd_alpha` as a skill, and needed it set
-globally when it was squatting in the walk slot.
+globally when it was squatting in the walk slot. A `live` block is the client's, smoothed as the
+gait would see it; the twist never is.
 
 ### 10.2 What stays in the daemon
 

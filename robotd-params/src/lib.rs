@@ -1261,10 +1261,21 @@ pub struct SkillDef {
     /// is how a policy with its own command encoding becomes a one-shot: the published flamingo
     /// reads `[flag, side, 0]`, so `[1, 1, 0]` is "lift the left leg".
     ///
-    /// Head and body stay zeroed either way. Every one-shot published so far declares them
-    /// unused, and a skill that wanted them live would be a different shape than this.
+    /// Head and body stay zeroed either way, unless [`Self::live`] names them. Every one-shot
+    /// published so far declares them unused.
     #[serde(default)]
     pub command: [f64; 3],
+
+    /// The command blocks this skill's network reads from the caller rather than as zeros —
+    /// `["head"]` for a policy trained to track the head command while it runs.
+    ///
+    /// **Opt-in, because zero is what the one-shots were trained on.** A kick fed a live head
+    /// command would be steered by a slider it never saw in training. A perpetual skill that
+    /// holds a pose for a person-chosen time is different: a stand-on-a-dome policy trained with
+    /// the head slot is the case this exists for, and zeroing its head makes the console's head
+    /// controls silently do nothing while it runs. Empty — the default — is the old behaviour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live: Vec<LiveBlock>,
 
     /// The twist fed for `unwind_s` after the window, before handing back.
     ///
@@ -1292,6 +1303,55 @@ pub struct SkillDef {
     pub params: SkillOverrides,
 }
 
+/// A command block a skill can read live from the caller, in [`SkillDef::live`].
+///
+/// Only the two blocks a skill otherwise has zeroed. The twist is not one of them: a skill's twist
+/// is its own (`command`/`unwind`), and handing it the caller's would turn a one-shot back into
+/// the walk slot it was taken out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LiveBlock {
+    /// neck_pitch, head_pitch, head_yaw, head_roll — observation slots 51..55.
+    Head,
+    /// Standing body pose z, roll, pitch — slots 57..60.
+    Body,
+}
+
+impl LiveBlock {
+    /// Every block a skill can ask for; what a refusal names as the choices.
+    pub const ALL: [LiveBlock; 2] = [LiveBlock::Head, LiveBlock::Body];
+
+    /// The manifest's word for it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LiveBlock::Head => "head",
+            LiveBlock::Body => "body",
+        }
+    }
+
+    /// Parse a manifest's `command.live`, refusing what this daemon cannot feed.
+    ///
+    /// **A refusal, not a skip.** An entry dropped quietly is a policy that asked for a command
+    /// and gets zeros — a robot whose head ignores its controls, the very symptom this field
+    /// exists to remove. Duplicates collapse: asking twice is still asking once.
+    pub fn parse_list<S: AsRef<str>>(names: &[S]) -> Result<Vec<LiveBlock>, String> {
+        let mut blocks = Vec::new();
+        for name in names {
+            let name = name.as_ref();
+            let block = LiveBlock::ALL
+                .into_iter()
+                .find(|b| b.as_str().eq_ignore_ascii_case(name))
+                .ok_or_else(|| {
+                    format!("command.live {name:?} is not a block this daemon feeds (head, body)")
+                })?;
+            if !blocks.contains(&block) {
+                blocks.push(block);
+            }
+        }
+        Ok(blocks)
+    }
+}
+
 /// Parameters a skill changes for its duration, restored when it ends.
 ///
 /// **Raw parameter names, not a vocabulary of our own.** `cmd_alpha` rather than an invented
@@ -1310,7 +1370,8 @@ pub struct SkillDef {
 /// from `command` or `unwind` and feeds it straight to the network. So a skill's twist is
 /// unsmoothed by construction — which is exactly what a policy reading a flag rather than a
 /// velocity needs, and the reason driving one through `robot.move` into the walk slot needed
-/// `cmd_alpha = 1.0` set globally and remembered afterwards.
+/// `cmd_alpha = 1.0` set globally and remembered afterwards. A block a skill takes
+/// [`SkillDef::live`] is the client's, smoothed as the gait would see it — the twist never is.
 ///
 /// **A named set rather than "any key".** A skill that could widen a joint limit or lengthen the
 /// deadman would be reaching past the layer that makes a stranger's policy safe to try at all —
@@ -1640,6 +1701,7 @@ fn fallback_skills() -> Vec<SkillDef> {
         duration: 0.5,
         chain: false,
         command: [0.0; 3],
+        live: Vec::new(),
         unwind: [0.0; 3],
         unwind_s: 0.0,
         params: SkillOverrides::default(),
@@ -1654,6 +1716,7 @@ fn fallback_skills() -> Vec<SkillDef> {
             // onto a one-shot.
             chain: true,
             command: [0.0; 3],
+            live: Vec::new(),
             unwind: [0.0; 3],
             unwind_s: 0.0,
             params: SkillOverrides::default(),
@@ -4122,5 +4185,40 @@ mod tests {
             let path = write(dir.path(), &format!("[control]\nhz = {hz}\n"));
             assert!(Params::load(&path, true).is_err(), "hz = {hz} was accepted");
         }
+    }
+
+    /// `command.live` names blocks in the manifest's words, and an unknown one is refused rather
+    /// than dropped: a policy that asked for `"heads"` and silently got zeros is a head that
+    /// ignores its controls with nothing on the screen saying why.
+    #[test]
+    fn a_live_list_is_parsed_or_refused_never_trimmed() {
+        assert_eq!(
+            LiveBlock::parse_list(&["head", "Body", "head"]),
+            Ok(vec![LiveBlock::Head, LiveBlock::Body])
+        );
+        assert_eq!(LiveBlock::parse_list::<&str>(&[]), Ok(vec![]));
+        let refused =
+            LiveBlock::parse_list(&["head", "twist"]).expect_err("twist is a skill's own");
+        assert!(refused.contains("\"twist\""), "{refused}");
+    }
+
+    /// The config spelling is the manifest's: `live = ["head"]` in `[[policy.skill]]`. And a value
+    /// this build does not know fails the parse — the backstop when a file was written by
+    /// something newer than the loader reading it.
+    #[test]
+    fn a_skill_table_reads_live_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "[[policy.skill]]\nname = \"d\"\nduration = 5.0\nlive = [\"head\"]\n",
+        );
+        let params = Params::load(&path, true).expect("loads");
+        assert_eq!(params.policy.skills[0].live, vec![LiveBlock::Head]);
+
+        let path = write(
+            dir.path(),
+            "[[policy.skill]]\nname = \"d\"\nduration = 5.0\nlive = [\"tail\"]\n",
+        );
+        assert!(Params::load(&path, true).is_err());
     }
 }

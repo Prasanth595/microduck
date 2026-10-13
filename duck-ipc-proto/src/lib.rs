@@ -451,7 +451,22 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// for servo power being off — about a robot whose fifteen servos had just answered their pings.
 /// Additive: absent from an older `robotd`, and `false` reads as "not told", which is what the old
 /// wording assumed anyway.
-pub const API_VERSION: u32 = 41;
+///
+/// # v42 — a skill can read the live head and body command
+///
+/// `live` on [`SkillParams`] and [`PolicyFetchResult`], from a manifest's `command.live`: the
+/// command blocks a skill's network reads from the caller instead of zeros. A perpetual skill
+/// trained to track the head — standing on a dome while looking around — had its head command
+/// zeroed for as long as it ran, and the console's head controls did nothing with no reason given.
+///
+/// The install consequence is on the robot's own config: `live = ["head"]` in a `[[policy.skill]]`
+/// table is a key an older `robotd` does not know, and unknown keys inside a skill table are not
+/// pruned the way a section's are — so going back to a release before v42 with such a skill
+/// configured stops `robotd` loading its config until the skill is removed
+/// (`robotctl policy remove <name>`). Nothing changes for a robot with no `live` skill: the key is
+/// only written when the list is not empty. On the wire, `robot.addSkill` with `live` to an older
+/// `robotd` is refused as an unknown field, which is the honest answer.
+pub const API_VERSION: u32 = 42;
 
 /// The observation width every policy this robot family runs is built against.
 ///
@@ -2690,6 +2705,11 @@ pub struct PolicyFetchResult {
     /// be a generic one-shot at all — a phase policy fed a constant is a robot moving plausibly
     /// and wrongly.
     pub encoding: Option<String>,
+    /// The manifest's `command.live`: the command blocks (`head`, `body`) the policy reads from
+    /// the caller while it runs as a skill, rather than as zeros. Untrusted strings, passed on as
+    /// written — the client turning this into a skill is what refuses one it cannot feed. (v42)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub live: Vec<String>,
     /// Whether holding the button chains another run, from the manifest.
     pub chain: bool,
     /// The manifest's `schema_version`, so a client can say which convention it read.
@@ -4518,6 +4538,10 @@ pub struct SkillParams {
     /// trained on `zero_command_padding` expects and what most one-shots want.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<[f64; 3]>,
+    /// The command blocks (`head`, `body`) the network reads from the caller instead of zeros.
+    /// Absent keeps what the skill had; an empty list switches it back to zeros. (v42)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<Vec<String>>,
     /// The twist driven on the way back, for a policy that does not end itself. A manifest's
     /// `command.idle` is where this comes from when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]

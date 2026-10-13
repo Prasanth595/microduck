@@ -407,6 +407,13 @@ impl Model {
         if skill.command != [0.0; 3] {
             entry["command"] = toml_edit::value(array_of(skill.command));
         }
+        if !skill.live.is_empty() {
+            let mut live = toml_edit::Array::new();
+            for block in &skill.live {
+                live.push(block.as_str());
+            }
+            entry["live"] = toml_edit::value(live);
+        }
         if skill.unwind_s > 0.0 {
             entry["unwind"] = toml_edit::value(array_of(skill.unwind));
             entry["unwind_s"] = toml_edit::value(skill.unwind_s);
@@ -1388,6 +1395,34 @@ mod tests {
         assert_eq!(flamingo.name, "flamingo");
         assert_eq!(flamingo.command, [1.0, 1.0, 0.0]);
         assert_eq!(flamingo.unwind_s, 3.0);
+    }
+
+    /// A skill that reads the head command keeps saying so across a write and the daemon's own
+    /// load. Lost on the way, it is a policy trained to track the head running on zeros — the
+    /// head ignoring its controls, which looks like a bug in the console rather than here.
+    #[test]
+    fn a_live_head_skill_survives_the_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("robotd.toml");
+        std::fs::write(&config, "[policy]\n").expect("write");
+
+        set_skill(
+            &config,
+            &crate::SkillDef {
+                name: "on-dome".into(),
+                path: Some(PathBuf::from("/srv/d.onnx")),
+                duration: 10.0,
+                live: vec![crate::LiveBlock::Head],
+                ..Default::default()
+            },
+        )
+        .expect("added");
+
+        let written = std::fs::read_to_string(&config).expect("read");
+        assert!(written.contains(r#"live = ["head"]"#), "{written}");
+        let parsed = Params::load(&config, true).expect("robotd would accept it");
+        let skill = parsed.policy.resolved().skills.pop().expect("the skill");
+        assert_eq!(skill.live, vec![crate::LiveBlock::Head]);
     }
 
     /// Removing says whether there was anything to remove, so a typo says so instead of looking

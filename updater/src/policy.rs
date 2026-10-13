@@ -880,6 +880,20 @@ mod tests {
         );
     }
 
+    /// `command.live` is read beside the prose `command.head` a published manifest already
+    /// carries, and absent is empty — every manifest written before it keeps meaning zeros.
+    #[test]
+    fn a_manifest_says_which_command_blocks_it_reads_live() {
+        let m = manifest(serde_json::json!({
+            "kind": "perpetual", "unwind_s": 1.0,
+            "command": { "encoding": "constant", "idle": [0, 0, 0], "live": ["head"],
+                         "head": "4D head-pose deltas from HOME" }
+        }));
+        assert_eq!(m.command.as_ref().unwrap().live, vec!["head".to_owned()]);
+        let plain = manifest(serde_json::json!({ "command": { "head": "unused (zeros)" } }));
+        assert!(plain.command.as_ref().unwrap().live.is_empty());
+    }
+
     /// The whole point of reading the manifest: a 51-D policy is refused before 800 KB is
     /// downloaded and before the robot is asked to run it. `robotd` would refuse it at load
     /// anyway — this is the same answer, arriving where somebody can act on it.
@@ -1137,6 +1151,9 @@ pub struct ManifestCommand {
     /// one-shot of something the daemon has to drive itself.
     pub encoding: Option<String>,
     pub idle: Option<[f64; 3]>,
+    /// The command blocks (`head`, `body`) the policy reads from the caller while it runs as a
+    /// skill. Passed on as written; `policy add` is what refuses a block it cannot feed.
+    pub live: Vec<String>,
     /// Phase encoding: seconds per cycle, and where in it the move hands back.
     pub period_s: Option<f64>,
     pub end_phase: Option<f64>,
@@ -1380,6 +1397,11 @@ pub async fn fetch(
         unwind_s: manifest.unwind_s,
         idle: manifest.command.as_ref().and_then(|c| c.idle),
         encoding: manifest.command.as_ref().and_then(|c| c.encoding.clone()),
+        live: manifest
+            .command
+            .as_ref()
+            .map(|c| c.live.clone())
+            .unwrap_or_default(),
         chain: manifest.chain,
         schema_version: manifest.schema_version,
     })

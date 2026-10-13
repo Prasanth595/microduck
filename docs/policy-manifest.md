@@ -34,6 +34,13 @@ Only a constant-command `episodic` policy can be a generic one-shot. A `phase` o
 policy is refused by `policy add` and belongs in the slot the daemon drives (`policy load
 ground_pick …`, `policy load sitstand …`). The daemon guards this on the encoding, not the name.
 
+**`command.live` says which other blocks a skill reads from the caller.** The encoding is about
+the twist; the head and body blocks of a skill's command are zeros, which is what every one-shot
+so far was trained on. A policy trained to track the head while it runs — standing on a dome and
+looking around — declares `"live": ["head"]`, and while it runs as a skill it is fed the caller's
+head command (smoothed, as the gait would see it) in both the window and the unwind. `"body"` does
+the same for the standing body pose. Any other entry is refused by `policy add`.
+
 ## Fields
 
 Everything is optional except `file` inside a set. Absent fields are not evidence: a robot refuses
@@ -60,6 +67,7 @@ a policy only on a claim that is present and wrong.
 | `entry_pose` | str | display | the pose the policy expects to start from, e.g. `standing` |
 | `command.encoding` | str | skills | see above |
 | `command.idle` | [3] | skills | the twist that means "stop doing the thing" |
+| `command.live` | [str] | skills | blocks fed from the caller instead of zeros: `head`, `body`; needs daemon API 42 |
 | `command.period_s`, `command.end_phase` | float | ground pick | the phase cycle |
 | `command.sit`, `command.stand`, `command.slot` | | display | the flag's values and where it rides |
 | `command.twist`, `command.head`, `command.body` | prose | display | what each block means to a person |

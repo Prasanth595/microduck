@@ -4137,6 +4137,15 @@ fn run_policy_skill(
     {
         return Err(Failure::new(exit::USAGE, why));
     }
+    // The command blocks the policy says it reads from the caller. Refused here, before anything
+    // is written, when it names one the daemon cannot feed: installed anyway, it would run on
+    // zeros where it asked for a command.
+    let live = from_manifest
+        .as_ref()
+        .map(|m| robotd_params::LiveBlock::parse_list(&m.live))
+        .transpose()
+        .map_err(|e| Failure::new(exit::USAGE, format!("{name}: {e}")))?
+        .unwrap_or_default();
     // The manifest supplies the length for a policy that ends itself. One that does not —
     // `kind: perpetual` — has no length to supply, and handing back mid-pose is exactly what a
     // hold and an unwind are for, so it is a refusal rather than a guess.
@@ -4178,6 +4187,7 @@ fn run_policy_skill(
             .map(twist_of)
             .transpose()?
             .unwrap_or_default(),
+        live,
         // The manifest knows how to stop: `command.idle` is the twist that means "stop doing
         // the thing", and `unwind_s` is how long the policy needs to get there. A flag on the
         // command line wins, because a person watching the robot is a better judge than a
@@ -4214,6 +4224,11 @@ fn run_policy_skill(
         // It was allowed through with an explicit --hold, which is the caller's call, but the
         // consequence is worth stating rather than discovering with the robot on one foot.
         println!("  no unwind: the gait takes over the moment it ends");
+    }
+    if !skill.live.is_empty() {
+        // Said because it changes what the head controls do while it runs.
+        let blocks: Vec<&str> = skill.live.iter().map(|b| b.as_str()).collect();
+        println!("  follows the live {} command", blocks.join(" and "));
     }
     report_reload(robot_socket);
     println!("  `robotctl robot do {name}` runs it, once the policy is driving");

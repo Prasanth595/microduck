@@ -177,6 +177,39 @@ enum SkillPhase {
     Unwinding,
 }
 
+/// The command block a skill's network is fed: its own twist for the phase, and the caller's head
+/// and body only where the skill names them in `live`.
+///
+/// Zero otherwise, whatever the phase — every one-shot published so far declares them unused, and
+/// a policy trained with `zero_command_padding` expects exactly that. Only the twist differs, and
+/// for most skills it is zero too, which is what made the kick and roulade arms the same arm.
+///
+/// A live block is the same in both phases. Zeroing it for the unwind would snap the head home a
+/// second before the gait takes it back, only for the gait to steer it to the same command again.
+fn skill_command(
+    def: Option<&robotd_params::SkillDef>,
+    phase: SkillPhase,
+    caller: &Command,
+) -> Command {
+    let Some(def) = def else {
+        return Command::default();
+    };
+    let mut command = Command {
+        twist: match phase {
+            SkillPhase::Holding => def.command,
+            SkillPhase::Unwinding => def.unwind,
+        },
+        ..Command::default()
+    };
+    for block in &def.live {
+        match block {
+            robotd_params::LiveBlock::Head => command.head = caller.head,
+            robotd_params::LiveBlock::Body => command.body = caller.body,
+        }
+    }
+    command
+}
+
 /// Which network drove the robot on the last step, as a policy change needs to know it.
 ///
 /// [`Net`] with the skill index replaced by the skill's name, because an index is only meaningful
@@ -593,25 +626,14 @@ impl Controller {
         // is the prototype's, with its three one-shots now one entry: skill > ground pick >
         // sit/rise > stand-by-magnitude > walk, and the skills themselves ordered by config.
         let (net, effective, label) = if let Some(active) = self.active {
-            // Head and body are zeroed whatever the phase — every one-shot published so far
-            // declares them unused, and a policy trained with `zero_command_padding` expects
-            // exactly that. Only the twist differs, and for most skills it is zero too, which is
-            // what made the kick and roulade arms the same arm.
             let def = self.skills.skills.get(active.index);
-            let twist = def.map_or([0.0; 3], |d| match active.phase {
-                SkillPhase::Holding => d.command,
-                SkillPhase::Unwinding => d.unwind,
-            });
             let label = def.map_or(std::borrow::Cow::Borrowed("skill"), |d| {
                 std::borrow::Cow::Owned(match active.phase {
                     SkillPhase::Holding => d.name.clone(),
                     SkillPhase::Unwinding => format!("{}:unwind", d.name),
                 })
             });
-            let c = Command {
-                twist,
-                ..Command::default()
-            };
+            let c = skill_command(def, active.phase, command);
             (Net::Skill(active.index), c, label)
         } else if let Some(phase) = self.ground_pick {
             // The twist slots carry the phase encoding; head and body are zero-padded,
@@ -1020,5 +1042,72 @@ mod tests {
             !c.busy(),
             "a stop ends the pick rather than resuming it later"
         );
+    }
+
+    fn caller() -> Command {
+        Command {
+            twist: [0.3, 0.0, 0.5],
+            head: [0.1, 0.2, 0.3, 0.05],
+            body: duck_control::obs::BodyPose {
+                z: -0.01,
+                roll: 0.02,
+                pitch: 0.03,
+            },
+        }
+    }
+
+    /// **A skill that did not ask stays on zeros** — the behaviour every published one-shot was
+    /// trained on, pinned so `live` cannot leak into a kick. The caller's twist never reaches a
+    /// skill either: a skill's twist is its own, live or not.
+    #[test]
+    fn a_skill_without_live_blocks_sees_zero_head_and_body() {
+        let kick = robotd_params::SkillDef {
+            name: "kick_left".into(),
+            duration: 0.5,
+            ..Default::default()
+        };
+        for phase in [SkillPhase::Holding, SkillPhase::Unwinding] {
+            let c = skill_command(Some(&kick), phase, &caller());
+            assert_eq!(c, Command::default(), "{phase:?}");
+        }
+    }
+
+    /// **A skill with `live = ["head"]` gets the caller's head, in both phases**, and still not
+    /// its body or twist. Zeroed, a policy trained to track the head would ignore the console's
+    /// head controls for as long as it runs — the bug this exists to fix — and zeroed only for
+    /// the unwind, the head would snap home a second before the gait steers it back.
+    #[test]
+    fn a_live_head_skill_sees_the_callers_head_while_holding_and_unwinding() {
+        let dome = robotd_params::SkillDef {
+            name: "on-dome".into(),
+            duration: 10.0,
+            command: [0.0; 3],
+            unwind: [0.0, 0.0, 0.1],
+            unwind_s: 1.0,
+            live: vec![robotd_params::LiveBlock::Head],
+            ..Default::default()
+        };
+        let holding = skill_command(Some(&dome), SkillPhase::Holding, &caller());
+        assert_eq!(holding.head, caller().head);
+        assert_eq!(holding.body, duck_control::obs::BodyPose::default());
+        assert_eq!(holding.twist, [0.0; 3], "its own twist, not the caller's");
+
+        let unwinding = skill_command(Some(&dome), SkillPhase::Unwinding, &caller());
+        assert_eq!(unwinding.head, caller().head);
+        assert_eq!(unwinding.twist, [0.0, 0.0, 0.1], "the unwind twist");
+    }
+
+    /// `body` is the other block, and it lands in the body slots rather than the head's.
+    #[test]
+    fn a_live_body_skill_sees_the_callers_body_pose() {
+        let pose = robotd_params::SkillDef {
+            name: "pose".into(),
+            duration: 3.0,
+            live: vec![robotd_params::LiveBlock::Body],
+            ..Default::default()
+        };
+        let c = skill_command(Some(&pose), SkillPhase::Holding, &caller());
+        assert_eq!(c.body, caller().body);
+        assert_eq!(c.head, [0.0; 4]);
     }
 }
