@@ -107,7 +107,7 @@ pub struct Params {
     pub pad_body: PadBodyParams,
     /// `[pad_drive]` on wheels.
     pub pad_roller: PadRollerParams,
-    /// The pad over UDP: `netpadd` reads this, and so does `padd`, to know whether to stand down.
+    /// The pad over UDP, read by `netpadd`. `padd` runs whatever it says.
     pub netpad: NetpadParams,
 }
 
@@ -178,13 +178,13 @@ impl PadDriveParams {
 
 /// A gamepad over UDP, from a program on the LAN — `netpadd`. `docs/robot/udp-pad.md` owns it.
 ///
-/// `enabled` is the switch between the two pad daemons, not a feature flag on one: both units ask
-/// it in `ExecCondition=`, so exactly one of `padd` and `netpadd` runs, and an update's restart of
-/// every shipped unit reaches the same answer as a boot does.
+/// `enabled` is `netpadd.service`'s `ExecCondition=`, so an update's restart of every shipped unit
+/// reaches the same answer as a boot does. `padd` runs either way; a connected Bluetooth pad has
+/// the robot over UDP (`pad_map::handover`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct NetpadParams {
-    /// UDP is the pad source; `padd` stands down.
+    /// `netpadd` runs beside `padd`; a connected Bluetooth pad still comes first.
     pub enabled: bool,
     /// The UDP port, bound on IPv4 0.0.0.0.
     pub port: u16,

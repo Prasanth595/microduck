@@ -920,8 +920,8 @@ A TOML file read at startup and, for the most part, **not watched**. It lives ou
 `/etc/robot/robotd.toml`.
 
 Two parts of it are watched, and both are exceptions earned by what a restart would cost rather
-than steps towards watching the whole file. Whichever pad daemon runs — `padd`, or `netpadd`
-for the pad over UDP — stats the file once a second and re-reads the controller sections
+than steps towards watching the whole file. Each pad daemon — `padd`, and `netpadd` for the pad
+over UDP — stats the file once a second and re-reads the controller sections
 (`[pad]`, `[pad_imu_head_control]`, `[pad_drive]`, `[pad_axes]`, `[pad_head]`, `[pad_body]` and
 `[pad_roller]`) when the mtime moves: a binding is changed from a phone, and restarting the
 daemon to apply it would drop the pad session and let `robotd`'s deadman zero a walking robot.

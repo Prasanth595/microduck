@@ -157,6 +157,9 @@ pub enum Verdict {
     Driving,
     /// Another client holds the robot; this one is dropped until it has been quiet `timeout_ms`.
     Busy,
+    /// A Bluetooth pad is driving the robot, and it wins over UDP (`crate::handover`): this
+    /// client is dropped until that pad goes away.
+    Bluetooth,
     /// A code this build does not know, kept so a reader can say so.
     Other(u8),
 }
@@ -166,6 +169,7 @@ impl Verdict {
         match self {
             Self::Driving => 1,
             Self::Busy => 2,
+            Self::Bluetooth => 3,
             Self::Other(c) => c,
         }
     }
@@ -174,6 +178,7 @@ impl Verdict {
         match c {
             1 => Self::Driving,
             2 => Self::Busy,
+            3 => Self::Bluetooth,
             c => Self::Other(c),
         }
     }
@@ -343,6 +348,11 @@ mod tests {
             Err(WireError::Magic),
             "a pad datagram is not a status"
         );
+        let bt = Status {
+            verdict: Verdict::Bluetooth,
+            ..s
+        };
+        assert_eq!(Status::decode(&bt.encode()), Ok(bt));
         let mut odd = b;
         odd[5] = 9;
         assert_eq!(Status::decode(&odd).unwrap().verdict, Verdict::Other(9));

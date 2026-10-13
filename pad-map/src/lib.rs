@@ -8,6 +8,7 @@
 mod bindings;
 mod buttons;
 mod continuous;
+pub mod handover;
 mod hold;
 pub mod loss;
 mod mapper;
@@ -20,16 +21,15 @@ pub use hold::{HoldAction, HoldButton};
 pub use loss::{PadLoss, PadLossAction};
 pub use mapper::{Config, Mapper, Out, PadFrame, refusal, report};
 
-/// Whether `[netpad] enabled` hands the pad to `netpadd`. The one question both units'
-/// `ExecCondition=` ask.
+/// Whether `[netpad] enabled` runs `netpadd` — its unit's `ExecCondition=`. `padd` always runs;
+/// [`handover`] is how the two share the robot.
 ///
-/// A file that cannot be read answers **no**: a bad config must never leave somebody without the
-/// Bluetooth pad, which is the rule `padd` already lives by.
+/// A file that cannot be read answers **no**: a bad config never opens the UDP port.
 pub fn udp_selected(config: &std::path::Path) -> bool {
     match robotd_params::Params::load(config, false) {
         Ok(params) => params.netpad.enabled,
         Err(e) => {
-            tracing::warn!(error = %e, "cannot read the config; the Bluetooth pad keeps the robot");
+            tracing::warn!(error = %e, "cannot read the config; the UDP pad stays off");
             false
         }
     }
@@ -38,7 +38,7 @@ pub fn udp_selected(config: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_selector_reads_netpad_enabled_and_a_bad_file_keeps_bluetooth() {
+    fn the_selector_reads_netpad_enabled_and_a_bad_file_keeps_udp_off() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("robotd.toml");
         std::fs::write(&p, "[netpad]\nenabled = true\n").unwrap();
@@ -46,10 +46,10 @@ mod tests {
         std::fs::write(&p, "[netpad]\nenabled = false\n").unwrap();
         assert!(!super::udp_selected(&p));
         std::fs::write(&p, "[netpad\n").unwrap();
-        assert!(!super::udp_selected(&p), "unreadable → padd");
+        assert!(!super::udp_selected(&p), "unreadable → off");
         assert!(
             !super::udp_selected(&dir.path().join("missing.toml")),
-            "absent → defaults → padd"
+            "absent → defaults → off"
         );
     }
 }

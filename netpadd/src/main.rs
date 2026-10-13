@@ -6,9 +6,9 @@
 //! socket, the same deadman semantics. A client that goes quiet is a pad that went away: nothing
 //! more is sent, and robotd's deadman holds the robot.
 //!
-//! Only one of the two runs. `[netpad] enabled` decides, and both units ask it in
-//! `ExecCondition=` (`--should-run`) — not `Conflicts=`, which an update's restart of every
-//! shipped unit would turn into "Bluetooth wins" (`restart-order.md` §1).
+//! It runs while `[netpad] enabled` is on (`ExecCondition=`, `--should-run`), beside `padd`, which
+//! always runs. A Bluetooth pad that connects takes the robot from the UDP client and keeps it
+//! until it goes away — `pad_map::handover` has why, and how the two daemons tell each other.
 //!
 //! One tokio task on a current-thread runtime owns the socket, robotd's connection and the
 //! receiver: no locks, no work-stealing jitter. `receiver.rs` decides; this file only waits and
@@ -44,6 +44,12 @@ struct Args {
     /// Exit 0 if `[netpad] enabled` says this daemon should run, 1 if not — for `ExecCondition=`.
     #[arg(long)]
     should_run: bool,
+    /// Present while a UDP client drives — for `padd` (`pad_map::handover`).
+    #[arg(long, default_value = pad_map::handover::UDP)]
+    driving_file: PathBuf,
+    /// Present while `padd` drives from a Bluetooth pad, which then has the robot.
+    #[arg(long, default_value = pad_map::handover::BLUETOOTH)]
+    bluetooth_file: PathBuf,
     /// Over `pad_axes.deadzone`, as in `padd`.
     #[arg(long, value_parser = pad_map::parse_deadzone)]
     deadzone: Option<f64>,
@@ -55,10 +61,16 @@ struct Args {
 #[cfg(test)]
 impl Args {
     fn for_test(socket: PathBuf, config: PathBuf) -> Self {
+        let dir = config
+            .parent()
+            .expect("a config in a directory")
+            .to_path_buf();
         Self {
             socket,
             config,
             should_run: false,
+            driving_file: dir.join("udp-driving"),
+            bluetooth_file: dir.join("bt-driving"),
             deadzone: None,
             max_head: None,
         }
@@ -181,6 +193,9 @@ async fn serve(
     let robot_health = health::spawn(&args.socket);
     let mut report_at = Instant::now() + pad_map::wire::REPORT_EVERY;
     let mut refused = None::<(&'static str, String, Instant)>;
+    // Whether a UDP client is driving, for `padd` — and whether `padd` is, for this loop.
+    let mut driving = pad_map::handover::Marker::new(args.driving_file.clone());
+    let mut bluetooth = false;
 
     loop {
         let mut wake = rx
@@ -224,7 +239,7 @@ async fn serve(
                                 malformed_logged = Some(now);
                             }
                         }
-                        Accept::Taken | Accept::Stale | Accept::OtherPeer => {}
+                        Accept::Taken | Accept::Stale | Accept::OtherPeer | Accept::Bluetooth => {}
                     }
                     next = socket.try_recv_from(&mut buf).ok();
                 }
@@ -237,6 +252,24 @@ async fn serve(
         }
 
         let now = Instant::now();
+        // Every wake, so a Bluetooth pad that connects takes the robot within one datagram.
+        let bt = pad_map::handover::driving(&args.bluetooth_file);
+        if bt != bluetooth {
+            bluetooth = bt;
+            if bt {
+                tracing::warn!("Bluetooth pad connected — it has the robot; UDP clients wait");
+            } else {
+                tracing::warn!("Bluetooth pad gone — a UDP client can drive");
+            }
+        }
+        if rx.bluetooth(bt) {
+            // Taken, not lost: a hold in flight belongs to the client that let go.
+            mapper.pad_gone();
+        }
+        if bt {
+            // A client that went quiet before the pad connected is not abandoning the robot.
+            pad_loss.handed_over();
+        }
         if now >= housekeeping {
             housekeeping = now + pad_map::BINDINGS_POLL;
             let at = std::fs::metadata(&args.config)
@@ -295,7 +328,9 @@ async fn serve(
             }
         }
 
-        match rx.poll(now) {
+        let step = rx.poll(now);
+        driving.set(rx.peer().is_some());
+        match step {
             Step::Idle => {}
             Step::Gone => {
                 tracing::warn!(
@@ -366,7 +401,7 @@ impl Answers {
                 self.stale = self.stale.wrapping_add(1);
                 Verdict::Driving
             }
-            Accept::OtherPeer => {
+            Accept::OtherPeer | Accept::Bluetooth => {
                 if self
                     .busy_answered
                     .is_some_and(|at| now.duration_since(at) < pad_map::wire::BUSY_EVERY)
@@ -374,7 +409,11 @@ impl Answers {
                     return None;
                 }
                 self.busy_answered = Some(now);
-                Verdict::Busy
+                if accept == Accept::Bluetooth {
+                    Verdict::Bluetooth
+                } else {
+                    Verdict::Busy
+                }
             }
             Accept::Malformed(_) => return None,
         };
@@ -645,6 +684,56 @@ mod tests {
         let s = answer(&other).await.expect("busy");
         assert_eq!(s.verdict, Verdict::Busy);
         assert_eq!(answer(&other).await, None, "once a second");
+        assert!(!serving.is_finished());
+    }
+
+    /// A Bluetooth pad connecting takes the robot from the UDP client at once: no motion after,
+    /// no sit, the client told why — and the marker `padd` reads says who drove when.
+    #[tokio::test]
+    async fn a_bluetooth_pad_takes_the_robot_from_the_udp_client() {
+        use pad_map::wire::Verdict;
+        let (dir, mut seen, serving, client) = start().await;
+        let (udp, bt) = (
+            dir.path().join("udp-driving"),
+            dir.path().join("bt-driving"),
+        );
+        let seq = hold(&client, 1, pad_map::Buttons::NONE, 200).await;
+        assert!(udp.exists(), "a driving client is announced to padd");
+        assert_eq!(
+            answer(&client).await.map(|s| s.verdict),
+            Some(Verdict::Driving)
+        );
+
+        std::fs::write(&bt, b"").unwrap();
+        let seq = hold(&client, seq, pad_map::Buttons::NONE, 100).await;
+        drain(&mut seen);
+        while answer(&client)
+            .await
+            .is_some_and(|s| s.verdict == Verdict::Driving)
+        {}
+        assert!(
+            !udp.exists(),
+            "nor any longer once the Bluetooth pad has it"
+        );
+        let seq = hold(&client, seq, pad_map::Buttons::NONE, 1_500).await;
+        let sent: Vec<_> = drain(&mut seen).into_iter().map(|(m, _)| m).collect();
+        assert!(
+            sent.iter()
+                .all(|m| m == "robot.health" || m == "robot.subscribe"),
+            "nothing sent to robotd — no motion, no question, no sit: {sent:?}"
+        );
+        let mut told = None;
+        while let Some(s) = answer(&client).await {
+            told = Some(s.verdict);
+            if s.verdict == Verdict::Bluetooth {
+                break;
+            }
+        }
+        assert_eq!(told, Some(Verdict::Bluetooth), "the client is told why");
+
+        std::fs::remove_file(&bt).unwrap();
+        hold(&client, seq, pad_map::Buttons::NONE, 200).await;
+        assert!(udp.exists(), "the pad gone, the client drives again");
         assert!(!serving.is_finished());
     }
 

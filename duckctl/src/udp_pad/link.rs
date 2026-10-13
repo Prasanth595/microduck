@@ -46,6 +46,8 @@ pub enum State {
     Driving,
     /// Answers come back: another sender has the robot.
     Busy,
+    /// Answers come back: a Bluetooth pad has the robot, and it wins over UDP.
+    Bluetooth,
     /// There were answers, and there have been none for this long.
     Silent(Duration),
     /// Sends went out for [`NEVER`] and nothing ever answered.
@@ -168,15 +170,14 @@ impl Link {
         match self.last {
             Some((at, verdict)) => {
                 let quiet = now.saturating_duration_since(at);
-                let limit = if verdict == Verdict::Busy {
-                    BUSY_SILENT
-                } else {
-                    SILENT
-                };
+                let refusing = matches!(verdict, Verdict::Busy | Verdict::Bluetooth);
+                let limit = if refusing { BUSY_SILENT } else { SILENT };
                 if quiet >= limit {
                     State::Silent(quiet)
                 } else if verdict == Verdict::Busy {
                     State::Busy
+                } else if verdict == Verdict::Bluetooth {
+                    State::Bluetooth
                 } else {
                     State::Driving
                 }
@@ -289,6 +290,9 @@ mod tests {
         );
         assert!(matches!(l.state(ms(3_001) + BUSY_SILENT), State::Silent(_)));
         assert!(State::Silent(SILENT).same_kind(State::Silent(NEVER)));
+        // A Bluetooth pad is refused the same way, told once a second and named apart.
+        l.on_status(status(Verdict::Bluetooth, 0, 0), ms(3_500));
+        assert_eq!(l.state(ms(3_501) + BUSY_EVERY), State::Bluetooth);
         l.on_refused(ms(3_700));
         assert_eq!(l.state(ms(3_800)), State::Refused);
         l.on_status(status(Verdict::Driving, 0, 1), ms(3_900));

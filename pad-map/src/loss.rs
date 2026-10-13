@@ -99,6 +99,12 @@ impl PadLoss {
         }
     }
 
+    /// The other pad daemon is driving now ([`crate::handover`]): the robot was handed over, not
+    /// abandoned, so nothing is asked and nothing sat — and nothing greeted when this pad returns.
+    pub fn handed_over(&mut self) {
+        *self = Self::Present;
+    }
+
     /// The robot is sitting, or there was nothing to sit: stop asking.
     pub fn settle(&mut self) {
         if matches!(self, Self::Lost { .. }) {

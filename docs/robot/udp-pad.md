@@ -4,8 +4,8 @@ A program on the same network sends the state of a gamepad — sticks, triggers,
 datagrams, and the robot does with it exactly what it does with a Bluetooth pad: the same mapping,
 the same D-pad modes, the same holds on Start and Select. It is for a pad that is not near the
 robot, or not Bluetooth at all — a laptop with a pad in its USB port, a phone, a script. `netpadd`
-is the daemon that listens; `padd` is the one that reads a pad over Bluetooth, and exactly one of
-them runs at a time (see [what the robot does](#what-the-robot-does)).
+is the daemon that listens; `padd` is the one that reads a pad over Bluetooth. Both run, and a
+connected Bluetooth pad comes first (see [what the robot does](#what-the-robot-does)).
 
 **It is a quick, unauthenticated LAN tool, made for one case: a pad driving a robot on a network you
 trust, with as little latency as possible.** Anyone on that network who can reach the port can
@@ -22,8 +22,8 @@ Pairing a Bluetooth pad is a different thing, and it is
 It is off by default. Turn it on only when you know what it opens, on a network you trust.
 
 Once on, **it stays on** — across reboots and updates — until you switch it off again: it is a
-configuration key, not a session. While it is on, the port is open and the Bluetooth pad does not
-work.
+configuration key, not a session. While it is on, the port is open. The Bluetooth pad keeps
+working beside it and has the robot whenever it is connected.
 
 Switch it on in the configuration:
 
@@ -31,42 +31,30 @@ Switch it on in the configuration:
 sudo robotctl configure
 ```
 
-set `netpad.enabled = true`, then restart both daemons:
+set `netpad.enabled = true`, then restart `netpadd`:
 
 ```bash
-sudo systemctl restart padd netpadd
+sudo systemctl restart netpadd
 ```
 
-Both, because each decides at start whether it is the one to run: `padd` stands down when
-`[netpad] enabled` is true, and `netpadd` stands down when it is not. Restarting only one leaves the
-other on the old answer, and for a moment two sources — or none.
-
-To check which one has the robot:
+`robotctl configure` offers that restart itself. `netpadd` asks the key at start and stands down
+when it is off; `padd` runs either way. To check:
 
 ```bash
-systemctl is-active padd netpadd
+systemctl is-active netpadd
 ```
 
-```
-inactive
-active
-```
+`active` is listening. `inactive` is off. `failed` means it should be running and is not —
+`journalctl -u netpadd -b` has why.
 
-`padd` inactive and `netpadd` active is the UDP pad. The reverse is the Bluetooth pad. Both active
-means one of them was started on an older answer: both units select from the same key, so after a
-hand edit that restarted only one, the other runs on until it is restarted too — restart both, or
-change the key with `robotctl configure`, which does. Neither active means the one that should be
-running has failed — `journalctl -u netpadd -b` has why.
+To close the port, set `netpad.enabled = false` (or reset the key) and restart `netpadd`. A
+configuration that cannot be read counts as off, so a damaged file never opens it.
 
-To go back to Bluetooth, set `netpad.enabled = false` (or reset the key) and restart the same two
-units. A configuration that cannot be read counts as off, so a damaged file never leaves somebody
-without a pad.
-
-The other three keys are all read at start, so they too take a restart of both units:
+The other three keys are all read at start, so they too take a restart of `netpadd`:
 
 | key | default | what it is |
 |---|---|---|
-| `enabled` | `false` | UDP is the pad source, and `padd` stands down |
+| `enabled` | `false` | `netpadd` runs and listens, beside `padd` |
 | `port` | `4210` | the UDP port, bound on IPv4 `0.0.0.0` |
 | `max_hz` | `30` | the most intent frames a second sent to the robot, 10 to 100; outside that is refused |
 | `timeout_ms` | `250` | the silence after which the client counts as gone; it must be below `[safety] deadman_ms`, or the configuration is refused and the error names both keys |
@@ -130,6 +118,7 @@ from the robot's [answers](#what-the-robot-answers):
 |---|---|
 | `● CONNECTED` | the robot takes this laptop's datagrams. `rtt` is the round trip, `loss` the share of the last second's datagrams the robot did not count, and `stale` the ones it dropped as out of order |
 | `✕ REFUSED` | another client is driving the robot, and only one may at a time. This laptop is ignored until that one has been quiet for `timeout_ms`, then takes over |
+| `✕ REFUSED` — a Bluetooth pad | a Bluetooth pad is connected to the robot, and it comes first. This laptop takes over as soon as that pad is switched off or drops out |
 | `✕ NOT CONNECTED` — nothing listening | the robot's address refuses the port: `netpadd` is not running there, or `[netpad] enabled` is off |
 | `✕ NOT CONNECTED` — stopped answering | there were answers and they stopped. The Wi-Fi, the robot rebooting, or `netpadd` restarting |
 | `✕ NOT CONNECTED` — nothing answers | sends go out and nothing has ever come back: a wrong address, a firewall, or a `netpadd` older than its answers — which still drives |
@@ -217,7 +206,7 @@ the robot waits for them to be read.
 |---|---|---|---|
 | 0 | 4 | magic | `b"DKST"` |
 | 4 | 1 | version | `1` |
-| 5 | 1 | verdict | `1` driving: this client holds the robot. `2` busy: another client does |
+| 5 | 1 | verdict | `1` driving: this client holds the robot. `2` busy: another client does. `3` Bluetooth: a Bluetooth pad does, and every client waits for it to go |
 | 6 | 4 | seq | u32, the `seq` of the datagram answered |
 | 10 | 4 | accepted | u32, datagrams taken from the client holding the robot |
 | 14 | 4 | stale | u32, datagrams from that client dropped as not newer, or more than 1000 ahead |
@@ -283,15 +272,19 @@ added to `robot.health` reaches this report without a change to the format.
   datagram is dropped and counted, and the count is logged at most once every 10 seconds, so
   something noisy on the port cannot flood the journal.
 
-Exactly one of `padd` and `netpadd` runs because each asks the same configuration key in its unit's
-`ExecCondition=` before starting. Why that and not `Conflicts=` is in
-`netpadd/systemd/netpadd.service`, and how it interacts with an update is
-[`restart-order.md`](../design/restart-order.md).
+- **A Bluetooth pad comes first.** `padd` runs beside `netpadd`, and while a paired pad is
+  connected it has the robot: the UDP client is let go at once — no deadman wait, no sit, since
+  the robot was taken rather than lost — and every client is answered `3` until the pad goes. Then
+  the next datagram drives, and the robot does not sit for the pad either, because it was handed
+  over. The Bluetooth pad wins because it was paired by someone standing next to the robot and the
+  UDP port is open to the LAN: whoever has the pad in their hand can always take the robot back.
+  The two daemons tell each other with a file each, `/run/padd/driving` and
+  `/run/netpadd/driving`, present while they drive — `pad-map/src/handover.rs`.
 
 ## Trust
 
 There is none. Anyone on the LAN who can reach UDP port 4210 can drive the robot once the current
-client has been quiet for `timeout_ms` — including holding Select to power it off. While a client
+client has been quiet for `timeout_ms` and no Bluetooth pad is connected — including holding Select to power it off. While a client
 is talking, its address is the only thing that keeps others out, and a source address on a LAN can
 be forged: a datagram carrying the driver's address and a `seq` just ahead of theirs is taken as
 theirs. The 1000-ahead bound stops a single blind forgery from locking the driver out, not someone

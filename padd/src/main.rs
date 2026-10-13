@@ -9,8 +9,9 @@
 //! the way an API only the phone app uses inevitably would. The cost is a socket hop: tens
 //! of microseconds against a 20 ms tick.
 //!
-//! With `[netpad] enabled = true` this daemon stands down and `netpadd` takes pad state from a
-//! program on the LAN instead, through the same mapping (`pad-map`): `docs/robot/udp-pad.md`.
+//! With `[netpad] enabled = true`, `netpadd` also takes pad state from a program on the LAN,
+//! through the same mapping (`pad-map`): `docs/robot/udp-pad.md`. Both run; a Bluetooth pad that
+//! connects has the robot, and `pad_map::handover` is how the two daemons agree on that.
 //!
 //! ## The mapping
 //!
@@ -152,10 +153,13 @@ struct Args {
     #[arg(long, default_value = robotd_params::DEFAULT_PATH)]
     config: PathBuf,
 
-    /// Exit 0 if this daemon should run — `[netpad] enabled` is off — and 1 if `netpadd` has the
-    /// pad. For `ExecCondition=`; nothing else is started.
-    #[arg(long)]
-    should_run: bool,
+    /// Present while this daemon drives from a pad — for `netpadd` (`pad_map::handover`).
+    #[arg(long, default_value = pad_map::handover::BLUETOOTH)]
+    driving_file: PathBuf,
+
+    /// Present while `netpadd` drives from a UDP client: a pad lost then was handed over.
+    #[arg(long, default_value = pad_map::handover::UDP)]
+    udp_file: PathBuf,
 
     /// How often to read the pad, 1–1000 Hz. Matching the control rate exactly buys nothing —
     /// the loop reads the latest value once per tick — but staying at or above it keeps the
@@ -239,14 +243,6 @@ fn main() -> std::process::ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    if args.should_run {
-        return if pad_map::udp_selected(&args.config) {
-            std::process::ExitCode::from(1)
-        } else {
-            std::process::ExitCode::SUCCESS
-        };
-    }
-
     // Before anything that can fail, and before the gamepad subsystem especially: `padd` was the
     // one daemon whose journal could not say which build was running, which came up while chasing
     // exactly that question across all five.
@@ -325,6 +321,8 @@ fn main() -> std::process::ExitCode {
     let mut driving = false;
     // A driving pad that went away: the robot sits after a second — see `pad_map::loss`.
     let mut pad_loss = PadLoss::default();
+    // Whether a pad is driving, for `netpadd`: a Bluetooth pad has the robot over UDP.
+    let mut marker = pad_map::handover::Marker::new(args.driving_file.clone());
     // The continuous intents, and the buffer this tick's are built in. Both live across
     // ticks so a steady state neither allocates nor re-sends — see [`Continuous`].
     let mut continuous = Continuous::default();
@@ -403,7 +401,13 @@ fn main() -> std::process::ExitCode {
                     pad_map::loss::PAD_LOST_SIT
                 );
                 driving = false;
+                marker.set(false);
                 pad_loss.lost(tick);
+            }
+            // A UDP client driving by now took the robot over; nobody abandoned it.
+            if pad_loss.pending() && pad_map::handover::driving(&args.udp_file) {
+                tracing::warn!("the UDP pad has the robot — not sitting it down");
+                pad_loss.handed_over();
             }
             // Heard, because whoever lost the pad is looking at the robot, not the journal — but only
             // once the loss has lasted to the sit: a blip on bad Wi-Fi is not worth a quack.
@@ -447,6 +451,7 @@ fn main() -> std::process::ExitCode {
         if !driving {
             tracing::warn!(pad = pad.name(), "pad connected — driving");
             driving = true;
+            marker.set(true);
             if pad_loss.found() {
                 sound(&mut stream, proto::SoundTag::Greet);
             }

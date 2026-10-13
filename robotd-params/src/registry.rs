@@ -922,11 +922,12 @@ pub const REGISTRY: &[Entry] = &[
     ),
     // ── [netpad] ─────────────────────────────────────────────────────────────
     //
-    // The pad over UDP. `enabled` picks between `padd` and `netpadd`; restart both after.
+    // The pad over UDP. `enabled` runs `netpadd` beside `padd`; a Bluetooth pad wins when both
+    // have one (pad-map's `handover`). Restart netpadd after.
     entry(
         "netpad.enabled",
         Kind::Bool,
-        "Drive from UDP (netpadd) instead of the Bluetooth pad (padd) — restart both after",
+        "Also drive from UDP (netpadd); a connected Bluetooth pad still comes first — restart netpadd after",
     ),
     entry("netpad.port", Kind::Integer, "UDP port netpadd listens on"),
     entry(

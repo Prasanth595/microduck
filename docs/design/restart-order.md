@@ -77,7 +77,7 @@ On today's release `units_to_restart` is exactly:
 configd, mediad, netpadd, padd, robotd, tofd
 ```
 
-in that order — alphabetical, so the order is identical on every board and in every test. Exactly one of `padd` and `netpadd` runs, chosen by `ExecCondition=` on `[netpad] enabled` — `netpadd/systemd/netpadd.service` says why that and not `Conflicts=` — so the restart order between them does not matter. Nothing
+in that order — alphabetical, so the order is identical on every board and in every test. `padd` always runs and `netpadd` runs while `[netpad] enabled` is on (its `ExecCondition=`); a Bluetooth pad has the robot over the UDP one whichever started first ([`../robot/udp-pad.md`](../robot/udp-pad.md#what-the-robot-does)), so the restart order between them does not matter. Nothing
 was added to `deploy/updater.toml` to put `mediad` and `tofd` in that list, and nothing needed to
 be: both ship a unit with an `[Install]` section, which is the whole rule.
 
@@ -247,10 +247,6 @@ Because `select` and the reverts skip `hooks/postinstall`, they also never *remo
 downgrade to a release predating a daemon leaves that daemon's unit installed, pointing at a binary
 the older release does not contain; the unit fails, and since it is in the restart set, the failed
 restart fails the transition (`../project/install-path-gap.md`).
-The unit files that stay behind must also work with the older binaries `current` now points at:
-`padd.service` asks `padd --should-run` only when the active release ships `netpadd`, because an
-older `padd` has no such flag, and a condition that exits 2 is a skip, not a failure — a rollback
-would leave the robot with no pad and nothing saying so.
 
 ## 4. At boot
 

@@ -592,9 +592,9 @@ mode = "walk"
 
 # ── Pad over UDP ────────────────────────────────────────────────────────────────────────────
 #
-# Read by `padd` and `netpadd`. On, `netpadd` takes gamepad state from a program on the LAN —
-# `duckctl udp-pad`, or your own; docs/robot/udp-pad.md has the wire format — and `padd` stands
-# down. Restart both after changing it: `sudo systemctl restart padd netpadd`.
+# Read by `netpadd`. On, it takes gamepad state from a program on the LAN — `duckctl udp-pad`, or
+# your own; docs/robot/udp-pad.md has the wire format. The Bluetooth pad keeps working, and has the
+# robot whenever one is connected. Restart after changing it: `sudo systemctl restart netpadd`.
 # [netpad]
 # enabled = false
 # port = 4210

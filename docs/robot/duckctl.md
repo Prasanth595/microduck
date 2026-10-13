@@ -675,7 +675,7 @@ duckctl udp-pad
 ```
 
 Reads the first gamepad plugged into this machine and sends its state to a duck whose
-`[netpad] enabled` is true. The address is found the way `ip` finds it, so `--name` picks the robot;
+`[netpad] enabled` is true, and while no Bluetooth pad is connected — one that is has the robot. The address is found the way `ip` finds it, so `--name` picks the robot;
 give one instead (`duckctl udp-pad 192.168.1.42`) and no Bluetooth is involved at all. `--hz` (10 to 100, default 30) is the most it
 sends a second. It is a LAN tool, and [`udp-pad.md`](udp-pad.md) has the setup and the wire format.
 

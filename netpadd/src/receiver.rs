@@ -37,6 +37,8 @@ pub enum Accept {
     Stale,
     /// Another sender holds the lock.
     OtherPeer,
+    /// A Bluetooth pad has the robot, and every sender is dropped — see [`Receiver::bluetooth`].
+    Bluetooth,
     Malformed(WireError),
 }
 
@@ -62,6 +64,8 @@ pub struct Receiver {
     pressed: Buttons,
     released: Buttons,
     reserved_seen: u16,
+    /// `padd` is driving from a Bluetooth pad, which wins over UDP (`pad_map::handover`).
+    bluetooth: bool,
 }
 
 impl Receiver {
@@ -77,7 +81,22 @@ impl Receiver {
             pressed: Buttons::NONE,
             released: Buttons::NONE,
             reserved_seen: 0,
+            bluetooth: false,
         }
+    }
+
+    /// Whether a Bluetooth pad is driving. While it is, every datagram is answered
+    /// [`Accept::Bluetooth`] and nothing is sent; the client that held the robot is let go at
+    /// once, without the timeout and without [`Step::Gone`] — the robot was taken, not lost, so
+    /// nobody sits it down. True when that let a client go.
+    pub fn bluetooth(&mut self, driving: bool) -> bool {
+        self.bluetooth = driving;
+        if driving && self.peer.is_some() {
+            self.peer = None;
+            self.fresh = false;
+            return true;
+        }
+        false
     }
 
     pub fn on_datagram(&mut self, now: Instant, from: SocketAddr, bytes: &[u8]) -> Accept {
@@ -86,6 +105,9 @@ impl Receiver {
             Err(e) => return Accept::Malformed(e),
         };
         self.reserved_seen |= packet.reserved();
+        if self.bluetooth {
+            return Accept::Bluetooth;
+        }
         let connected = match self.peer {
             Some(peer) if peer != from => return Accept::OtherPeer,
             Some(_) => {
@@ -236,6 +258,43 @@ mod tests {
         tick(r.poll(t));
         r.on_datagram(ms(t, 60), addr(A), &pkt(2, Buttons::NONE, 0.9));
         assert!((tick(r.poll(ms(t, 60))).left_x - 0.9).abs() < 1e-4);
+    }
+
+    /// A Bluetooth pad takes the robot from a driving client at once, with no `Gone` — nothing
+    /// sits a robot somebody just picked up a pad to drive — and every client waits it out.
+    #[test]
+    fn a_bluetooth_pad_takes_the_robot_and_holds_off_every_client() {
+        let (mut r, t) = (rx(), Instant::now());
+        r.on_datagram(t, addr(A), &pkt(1, Buttons::NONE, 0.5));
+        tick(r.poll(t));
+        assert!(r.bluetooth(true), "the driving client is let go");
+        assert!(!r.bluetooth(true), "once");
+        assert_eq!(r.peer(), None);
+        assert_eq!(r.deadline(), None);
+        assert_eq!(r.poll(ms(t, 1_000)), Step::Idle, "taken, not gone");
+        assert_eq!(
+            r.on_datagram(ms(t, 10), addr(A), &pkt(2, Buttons::NONE, 0.5)),
+            Accept::Bluetooth
+        );
+        assert_eq!(
+            r.on_datagram(ms(t, 10), addr(B), &pkt(9, Buttons::NONE, 0.5)),
+            Accept::Bluetooth
+        );
+        assert_eq!(
+            r.on_datagram(ms(t, 10), addr(B), b"junk"),
+            Accept::Malformed(WireError::Short(4))
+        );
+        assert!(!r.bluetooth(false));
+        assert_eq!(
+            r.on_datagram(ms(t, 20), addr(B), &pkt(10, Buttons::A, 0.5)),
+            Accept::Connected,
+            "the pad gone, whoever sends next drives"
+        );
+        assert_eq!(
+            tick(r.poll(ms(t, 20))).pressed,
+            Buttons::NONE,
+            "what it held was pressed before"
+        );
     }
 
     #[test]

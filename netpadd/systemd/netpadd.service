@@ -2,11 +2,10 @@
 #
 # Install to /etc/systemd/system/netpadd.service.
 #
-# Enabled at boot like padd, and exactly one of the two runs: both ask `[netpad] enabled` in
-# ExecCondition=, which is the whole selection. Not Conflicts=: the updater restarts every shipped
-# unit in alphabetical order (docs/design/restart-order.md §1), so padd would restart after this one
-# and stop it, and every update would hand the robot back to Bluetooth. A skipped condition is not a
-# failure, so Restart=always does not loop on it and the update's restart step still succeeds.
+# Enabled at boot like padd, and runs only while `[netpad] enabled` is on — ExecCondition=. A skipped
+# condition is not a failure, so Restart=always does not loop on it and the update's restart step
+# still succeeds. padd runs beside it either way: a Bluetooth pad that connects has the robot, and
+# this daemon answers its UDP client so until that pad goes away (pad-map's `handover` module).
 
 [Unit]
 Description=Robot gamepad over UDP, intent client

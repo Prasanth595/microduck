@@ -236,6 +236,12 @@ pub fn verdict(to: &str, state: State) -> Option<(Verdict, String)> {
              that one has been quiet for [netpad] timeout_ms"
                 .to_owned(),
         ),
+        State::Bluetooth => (
+            Verdict::Refused,
+            "a Bluetooth pad is driving the duck, and it comes first — this one takes over once \
+             that pad is switched off"
+                .to_owned(),
+        ),
         State::Silent(d) => (
             Verdict::NotConnected,
             format!("the duck stopped answering {} ago; still sending", ms(d)),
@@ -551,7 +557,7 @@ fn flagged(text: String, key: &str, alarms: &[Alarm]) -> Span<'static> {
 fn render_robot(frame: &mut ratatui::Frame, v: &View, area: Rect) {
     let mut title = vec![Span::raw(" robot ")];
     let Some((report, age)) = v.robot else {
-        let why = if v.link.state(v.now) == State::Busy {
+        let why = if matches!(v.link.state(v.now), State::Busy | State::Bluetooth) {
             " only the client driving the duck is sent its health"
         } else {
             " no health from netpadd yet — it sends one a second to the driving client"

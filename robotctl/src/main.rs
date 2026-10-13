@@ -4837,7 +4837,7 @@ fn robot_skills(robot_socket: &Path) -> Option<Vec<String>> {
     Some(ack.skills)
 }
 
-fn run_pad(socket: &Path, config: &Path, command: PadCommand) -> Result<(), Failure> {
+fn run_pad(socket: &Path, command: PadCommand) -> Result<(), Failure> {
     let mut client = Client::connect_to("configd", socket)?;
     client.hello()?;
 
@@ -4884,7 +4884,7 @@ fn run_pad(socket: &Path, config: &Path, command: PadCommand) -> Result<(), Fail
 
     match command {
         PadCommand::Status { .. } => {
-            println!("{}", render_pad_status(&result, udp_selected(config))?)
+            println!("{}", render_pad_status(&result)?)
         }
         PadCommand::Pair { .. } => return report_pair(&result),
         PadCommand::Bindings { .. } | PadCommand::Bind { .. } | PadCommand::Reset { .. } => {
@@ -4910,15 +4910,7 @@ fn run_pad(socket: &Path, config: &Path, command: PadCommand) -> Result<(), Fail
     Ok(())
 }
 
-/// Whether `[netpad] enabled` gives the pad to netpadd — the question padd's own `ExecCondition=`
-/// asks, answered the same way: a file that cannot be read counts as not enabled, as it does for
-/// padd, so this never explains a stand-down that did not happen.
-fn udp_selected(config: &Path) -> bool {
-    robotd_params::Params::load(config, false).is_ok_and(|p| p.netpad.enabled)
-}
-
-/// `udp` is whether `[netpad] enabled` is set, which is what an inactive `padd` means then.
-fn render_pad_status(result: &serde_json::Value, udp: bool) -> Result<String, Failure> {
+fn render_pad_status(result: &serde_json::Value) -> Result<String, Failure> {
     use std::fmt::Write;
     let status: proto::PadStatusResult = decode(result)?;
 
@@ -4952,11 +4944,6 @@ fn render_pad_status(result: &serde_json::Value, udp: bool) -> Result<String, Fa
             .to_owned(),
         proto::UnitState::Failed => "FAILED to start — check:  \
                                      sudo journalctl -u padd -b | tail -30"
-            .to_owned(),
-        // Stood down, not stopped: padd's `ExecCondition=` skips it when the pad is over UDP.
-        // Advising a start here would be advising the one thing that selection exists to prevent.
-        proto::UnitState::Inactive if udp => "standing down — `[netpad] enabled` hands the pad \
-                                              to netpadd; see docs/robot/udp-pad.md"
             .to_owned(),
         proto::UnitState::Inactive => {
             "NOT running — start it:  sudo systemctl start padd".to_owned()
@@ -5324,7 +5311,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             ) {
                 return run_pad_bindings(&cli.robot_socket, &cli.pad_config, command);
             }
-            return run_pad(&cli.config_socket, &cli.pad_config, command);
+            return run_pad(&cli.config_socket, command);
         }
         Namespace::Account { command } => {
             return run_account(&cli.socket, command);
@@ -5713,31 +5700,17 @@ mod tests {
 
     // ── robotctl pad status ──────────────────────────────────────────────
 
-    /// `padd` inactive is two different robots: one where it should be running and is not, and
-    /// one where `[netpad] enabled` stood it down for netpadd. Telling the second to start padd
-    /// would hand the pad back to Bluetooth by hand, until the next restart undid it.
+    /// `padd` runs beside `netpadd`, so inactive is always something to fix.
     #[test]
-    fn an_inactive_padd_is_a_stand_down_when_the_pad_is_over_udp() {
+    fn an_inactive_padd_is_told_to_start() {
         let inactive = serde_json::to_value(proto::PadStatusResult {
             pads: Vec::new(),
             driver: proto::UnitState::Inactive,
         })
         .unwrap();
 
-        let bluetooth =
-            render_pad_status(&inactive, false).unwrap_or_else(|e| panic!("{}", e.message));
-        assert!(
-            bluetooth.contains("sudo systemctl start padd"),
-            "{bluetooth}"
-        );
-
-        let udp = render_pad_status(&inactive, true).unwrap_or_else(|e| panic!("{}", e.message));
-        assert!(!udp.contains("systemctl start padd"), "{udp}");
-        assert!(
-            udp.contains("[netpad] enabled") && udp.contains("netpadd"),
-            "{udp}"
-        );
-        assert!(udp.contains("udp-pad.md"), "{udp}");
+        let out = render_pad_status(&inactive).unwrap_or_else(|e| panic!("{}", e.message));
+        assert!(out.contains("sudo systemctl start padd"), "{out}");
     }
 
     // ── robotctl policy ──────────────────────────────────────────────────
