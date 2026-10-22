@@ -100,6 +100,8 @@ use duck_ipc_proto as proto;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use gstreamer_rtp as gst_rtp;
+use gstreamer_rtp::prelude::RTPHeaderExtensionExt;
 use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
 use tokio::sync::mpsc;
@@ -623,6 +625,7 @@ pub fn start(
     // regression rather than an improvement: `profile` defaults to High and `header-mode` to
     // first-frame, and both matter — see `wire_encoder_setup`.
     wire_encoder_setup(&sink)?;
+    wire_payloader_setup(&sink)?;
 
     let consumers: Consumers = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let (channels_tx, channels_rx) = mpsc::channel::<Channel>(4);
@@ -1999,6 +2002,74 @@ fn meter_capture_rate(
     })
     .context("could not add the capture-rate probe")?;
     Ok(())
+}
+
+/// Give every consumer's payloader the RFC 6051 `ntp-64` extension, so each frame states its own
+/// capture time from the first packet rather than from the first sender report.
+fn wire_payloader_setup(sink: &gst::Element) -> Result<()> {
+    if glib::subclass::signal::SignalId::lookup("payloader-setup", sink.type_()).is_none() {
+        return Err(anyhow!(
+            "webrtcsink has no payloader-setup signal; without it no frame states its capture time"
+        ));
+    }
+
+    sink.connect("payloader-setup", false, move |values| {
+        // (webrtcsink, consumer_id, stream_name, payloader).
+        let Some(payloader) = values.get(3).and_then(|v| v.get::<gst::Element>().ok()) else {
+            tracing::warn!(
+                arity = values.len(),
+                "payloader-setup did not carry a payloader; its frames carry no capture time"
+            );
+            return Some(false.to_value());
+        };
+
+        let Some(extension) = gst_rtp::RTPHeaderExtension::create_from_uri(NTP64_URI) else {
+            tracing::warn!("no RTP header extension for {NTP64_URI}; frames carry no capture time");
+            return Some(false.to_value());
+        };
+
+        extension.set_id(NTP64_EXT_ID);
+
+        if let Some(taken) = extension_at_id(&payloader, NTP64_EXT_ID) {
+            tracing::warn!(
+                id = NTP64_EXT_ID,
+                existing = %taken,
+                "the payloader already has an extension at this id; leaving capture time out \
+                 rather than replacing it"
+            );
+            return Some(false.to_value());
+        }
+
+        payloader.emit_by_name::<()>("add-extension", &[&extension]);
+        // `false`, so `webrtcsink`'s own handler still runs: it owns the payload type, the SSRC
+        // and the TWCC extension.
+        Some(false.to_value())
+    });
+
+    Ok(())
+}
+
+const NTP64_URI: &str = "urn:ietf:params:rtp-hdrext:ntp-64";
+
+/// Not 1: `webrtcsink` gives TWCC the smallest free id, and an id it has to move around is one
+/// whose feedback a peer can negotiate away.
+const NTP64_EXT_ID: u32 = 4;
+
+/// The URI already registered at `id`, if one is: `add-extension` replaces rather than refuses,
+/// and the extension it would replace is TWCC.
+fn extension_at_id(payloader: &gst::Element, id: u32) -> Option<glib::GString> {
+    let extensions = payloader.find_property("extensions")?;
+    if extensions.value_type() != gst::Array::static_type() {
+        return None;
+    }
+
+    payloader
+        .property::<gst::Array>("extensions")
+        .as_slice()
+        .iter()
+        .filter_map(|value| value.get::<gst_rtp::RTPHeaderExtension>().ok())
+        .find(|extension| extension.id() == id)
+        .and_then(|extension| extension.uri())
 }
 
 /// State one consumer's RTCP sender reports on the robot's clock, at capture time.
