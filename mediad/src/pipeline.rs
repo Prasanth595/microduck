@@ -2001,6 +2001,53 @@ fn meter_capture_rate(
     Ok(())
 }
 
+/// State one consumer's RTCP sender reports on the robot's clock, at capture time.
+///
+/// Every value is checked first: `set_property_from_str` panics on a name this build lacks, and a
+/// panic in a signal handler aborts the daemon.
+fn configure_sender_reports(webrtcbin: &gst::Element, peer: &str) {
+    let Some(rtpbin) = webrtcbin
+        .downcast_ref::<gst::Bin>()
+        .and_then(|bin| bin.by_name("rtpbin"))
+    else {
+        tracing::warn!(
+            peer,
+            "webrtcbin has no rtpbin on these plugins; sender reports stay on the wall clock"
+        );
+        return;
+    };
+
+    match rtpbin.find_property("ntp-time-source") {
+        Some(pspec)
+            if glib::EnumClass::with_type(pspec.value_type())
+                .and_then(|class| class.to_value_by_nick("clock-time"))
+                .is_some() =>
+        {
+            rtpbin.set_property_from_str("ntp-time-source", "clock-time");
+        }
+        Some(_) => tracing::warn!(
+            peer,
+            "rtpbin's ntp-time-source has no `clock-time` value on these plugins; sender reports \
+             stay on the wall clock"
+        ),
+        None => tracing::warn!(
+            peer,
+            "rtpbin has no ntp-time-source property on these plugins; sender reports stay on the \
+             wall clock"
+        ),
+    }
+
+    if rtpbin.find_property("rtcp-sync-send-time").is_some() {
+        rtpbin.set_property("rtcp-sync-send-time", false);
+    } else {
+        tracing::warn!(
+            peer,
+            "rtpbin has no rtcp-sync-send-time property on these plugins; sender reports state \
+             the send time rather than the capture time"
+        );
+    }
+}
+
 /// Give every consumer a `control` datachannel, and hand its ends to the caller.
 ///
 /// The robot creates the channel rather than waiting for the peer to, which is what
@@ -2062,6 +2109,7 @@ fn wire_consumers(
 
         // Before the datachannel, because this is what the *offer* needs and the offer is
         // generated as soon as this handler returns. §6 of `remote-access-design.md`.
+        configure_sender_reports(&webrtcbin, &peer);
         let turn_servers = offer_relay_candidates(&webrtcbin, &peer, &relays);
         // And before the offer too, for the same reason: gathering starts when the offer is
         // built, so a listener attached after this handler returns can miss the early candidates.
