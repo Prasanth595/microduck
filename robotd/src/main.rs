@@ -18,6 +18,7 @@
 //! publishes and never calls into the loop — a wedged loop reports itself unhealthy rather
 //! than hanging the caller.
 
+mod brain;
 mod chorale;
 mod control;
 mod head_imu;
@@ -284,6 +285,11 @@ struct Args {
     /// memory unless this names a file, so a laptop running the twin writes nothing to `/var/lib`.
     #[arg(long)]
     vetbook: Option<PathBuf>,
+
+    /// Where bounded mobility-learning evidence lives. It remains in memory for `--fake` and
+    /// `--sim` unless explicitly named, so a laptop rehearsal cannot change a robot's memory.
+    #[arg(long)]
+    brain_memory: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -710,6 +716,9 @@ struct RobotState {
     /// and never waits for it — see [`vetbook`].
     vetbook: vetbook::Book,
 
+    /// Local evidence used to make advisory mobility recommendations. It never owns motors.
+    mobility: brain::MobilityLearner,
+
     period_us: u64,
     min_achieved_hz: f64,
     stall_periods: u32,
@@ -774,6 +783,7 @@ impl RobotState {
             sitting: AtomicBool::new(false),
             // In memory until `main` opens the robot's own; tests keep it that way.
             vetbook: vetbook::Book::open(None, env!("CARGO_PKG_VERSION")),
+            mobility: brain::MobilityLearner::default(),
             period_us: params.period().as_micros() as u64,
             min_achieved_hz: params.update_gate.min_achieved_hz,
             stall_periods: params.update_gate.stall_periods,
@@ -1062,6 +1072,16 @@ async fn main() -> ExitCode {
         (!args.fake && args.sim.is_none()).then(|| PathBuf::from(vetbook::DEFAULT_PATH))
     });
     state.vetbook = vetbook::Book::open(vetbook_path, env!("CARGO_PKG_VERSION"));
+    let mobility_path = args.brain_memory.clone().or_else(|| {
+        (!args.fake && args.sim.is_none()).then(|| PathBuf::from(brain::DEFAULT_MOBILITY_PATH))
+    });
+    state.mobility = match brain::MobilityLearner::open(mobility_path) {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::error!(%error, "cannot load mobility memory; refusing to discard learning history");
+            return ExitCode::FAILURE;
+        }
+    };
     let state = Arc::new(state);
 
     if args.unhealthy {
@@ -1113,6 +1133,18 @@ async fn main() -> ExitCode {
             }
         }
     });
+    let mobility_saver = tokio::spawn({
+        let state = Arc::clone(&state);
+        async move {
+            let mut every = tokio::time::interval(vetbook::SAVE_INTERVAL);
+            every.tick().await;
+            loop {
+                every.tick().await;
+                let state = Arc::clone(&state);
+                let _ = tokio::task::spawn_blocking(move || state.mobility.save()).await;
+            }
+        }
+    });
 
     let serving = serve(
         Arc::clone(&state),
@@ -1139,6 +1171,10 @@ async fn main() -> ExitCode {
     // After the loop, which hands over its last second of counting as it stops.
     vetbook_saver.abort();
     state.vetbook.save();
+    mobility_saver.abort();
+    if let Err(error) = state.mobility.save() {
+        tracing::error!(%error, "cannot save mobility memory");
+    }
     // Bounded: an LED write that hangs on the expander must not hold the daemon up.
     let _ = tokio::time::timeout(Duration::from_secs(1), leds).await;
     let _ = std::fs::remove_file(&args.socket);
@@ -3010,6 +3046,11 @@ async fn control_loop<T: RobotIo>(
                                     gain = params.safety.gain_limp,
                                     "falling — going limp to land soft"
                                 );
+                                // A fall is real evidence, but this loop does not guess what
+                                // caused it. A perception adapter may later label the same event
+                                // as a low obstacle, uneven ground, or a slippery surface.
+                                // Recording is non-blocking and can never delay the limp path.
+                                state.mobility.record_incident(brain::MobilityCue::Unknown);
                                 limp_fall = LimpFall::Limp {
                                     since: tick_start,
                                     landing: Landing::default(),

@@ -57,6 +57,9 @@ DUCKS="${DUCK_SIM_DUCKS:-1}"
 # asymmetry is what lets a pose be disambiguated from a 45-degree forward field of view, which is
 # exactly what the duck has. The default is a bare floor, where there is nothing to see.
 SCENE="${DUCK_SIM_SCENE:-}"
+# The body server owns named profiles. `microduck2` is the 45 cm reference model; it does not
+# load alpha policies and starts from HOME because it has no copied alpha keyframes.
+PROFILE="${DUCK_SIM_PROFILE:-microduck}"
 
 # Which ducks have an eye. `a`, `a,c`, or `all`; empty for none, which is the default because a
 # rendered frame costs 12 ms against 0.3 ms to step four ducks' physics — one camera is a third of a
@@ -647,6 +650,10 @@ start_body() {
         */*)  scene_arg="--scene $SCENE" ;;
         *)    scene_arg="--scene $RL/src/mjlab_microduck/robot/microduck/scene_$SCENE.xml" ;;
     esac
+    keyframe="${DUCK_SIM_KEYFRAME:-SIT}"
+    if [ "$PROFILE" = microduck2 ] && [ -z "${DUCK_SIM_KEYFRAME:-}" ]; then
+        keyframe=HOME
+    fi
     # **The camera flags go with the cameras.** Rendering is newer than the body server, and a
     # build without it has no `--cameras`/`--frame-port` — argparse then refuses the whole
     # invocation over two arguments nobody asked to use, and the duck never starts. Passed only
@@ -666,7 +673,7 @@ start_body() {
     fi
     # shellcheck disable=SC2086
     $SETSID nohup "$PY_BIN" -m mjlab_microduck.sim.body_server \
-        --port "$PORT" --ducks "$DUCKS" --keyframe "${DUCK_SIM_KEYFRAME:-SIT}" $HEADLESS $scene_arg \
+        --profile "$PROFILE" --port "$PORT" --ducks "$DUCKS" --keyframe "$keyframe" $HEADLESS $scene_arg \
         $cam_args \
         > "$STATE/body.log" 2>&1 &
     echo $! > "$STATE/body.pid"

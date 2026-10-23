@@ -6,7 +6,7 @@
 //! **variants** (small re-rolls within the same voice) so the duck doesn't sound like a
 //! stuck recording.
 //!
-//! Tags: `alarm`, `greet`, `inquire`, `peck`, `chirp`, `coo`, `wheee`. `wheee` is segmented
+//! Tags: `alarm`, `greet`, `inquire`, `peck`, `chirp`, `coo`, `whistle`, `warble`, `signal`, `wheee`. `wheee` is segmented
 //! (start / loop / end) so `robotd` can stream it for as long as the ride lasts.
 //!
 //! ## Ported from Python, and what that changed
@@ -39,20 +39,24 @@ pub use synth::SR;
 
 /// Bump when the synth changes enough that existing banks should re-render on the next
 /// install — the `.seed` marker includes it, so old banks stop matching and regenerate.
-/// v4 was the last Python bank; v5 is the Rust port (new RNG, 48 kHz native).
-pub const BANK_VERSION: u32 = 5;
+/// v4 was the last Python bank; v5 is the Rust port (new RNG, 48 kHz native);
+/// v6 expands the built-in voice vocabulary with whistle, warble, and signal calls.
+pub const BANK_VERSION: u32 = 6;
 
 /// A recipe: personality + variant in, f32 mono at [`SR`] out.
 pub type Recipe = fn(&Personality, u32) -> Vec<f32>;
 
 /// Every tag and its recipe. Order is the render order, nothing more.
-pub const TAGS: [(&str, Recipe); 7] = [
+pub const TAGS: [(&str, Recipe); 10] = [
     ("alarm", voices::alarm),
     ("greet", voices::greet),
     ("inquire", voices::inquire),
     ("peck", voices::peck),
     ("chirp", voices::chirp),
     ("coo", voices::coo),
+    ("whistle", voices::whistle),
+    ("warble", voices::warble),
+    ("signal", voices::signal),
     ("wheee", voices::wheee),
 ];
 
@@ -61,7 +65,7 @@ pub const TAGS: [(&str, Recipe); 7] = [
 /// (wake-up) are the most-heard tags, so they get the most.
 pub fn variant_count(tag: &str) -> u32 {
     match tag {
-        "greet" | "chirp" => 12,
+        "greet" | "chirp" | "warble" => 12,
         "wheee" => 6,
         _ => 10,
     }
@@ -172,8 +176,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sounds-test-{}", std::process::id()));
         let p = Personality::from_seed(100);
         let paths = render_all(&p, &dir).unwrap();
-        // 6 one-shot tags × their variants + wheee (6 × 3 segments).
-        let expected = 10 + 12 + 10 + 10 + 12 + 10 + 6 * 3;
+        // 9 one-shot tags × their variants + wheee (6 × 3 segments).
+        let expected = 10 + 12 + 10 + 10 + 12 + 10 + 10 + 12 + 10 + 6 * 3;
         assert_eq!(paths.len(), expected);
         assert!(dir.join("chirp/chirp_a.wav").exists());
         assert!(dir.join("chirp/chirp_l.wav").exists(), "12 chirp variants");

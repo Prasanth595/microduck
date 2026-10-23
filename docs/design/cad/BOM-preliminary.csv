@@ -1,0 +1,11 @@
+assembly,part,quantity,status,notes
+torso,structural torso shell,1,concept,Material and fastening method require mechanical review
+pelvis,load-bearing pelvis frame,1,concept,Must carry both hip modules and protected battery bay
+leg,leg cartridge,2,concept,Actuator/reduction family intentionally unselected
+foot,compliant replaceable foot,2,concept,210 x 120 x 45 mm envelope; tread and force sensing TBD
+compute,Linux compute module,1,architecture,Owns perception policy audio and robotd
+supervisor,STM32WB55RG board,1,architecture,Safety IO BLE pairing signed supervisor firmware
+nfc,ST25R3916 reader board,1,architecture,Signed owner/service tag reader only
+rf,CC1101 receive-only regional daughterboard,0,optional,No transmit/replay/access-control functions
+power,fused low-central battery pack,1,selection required,Electrical chemistry capacity and protection TBD
+safety,physical emergency-stop chain,1,selection required,Must interrupt motor enable independent of Linux

@@ -51,6 +51,7 @@ mod led;
 mod monitor;
 mod path_map;
 mod show;
+mod support;
 mod vetbook;
 
 /// Exit codes. Stable — CI asserts on these.
@@ -417,6 +418,17 @@ enum Namespace {
         boot: i32,
         #[arg(long)]
         json: bool,
+    },
+
+    /// Collect a read-only diagnostic bundle for support or a bug report.
+    ///
+    /// The bundle contains health, software versions and update history. It deliberately does
+    /// not read credentials, wifi configuration or account tokens. Journal excerpts are opt-in:
+    /// they can contain context from an operator's commands, so inspect them before sharing.
+    #[command(subcommand_required = true, arg_required_else_help = true)]
+    Support {
+        #[command(subcommand)]
+        command: support::SupportCommand,
     },
 
     /// Print a shell completion script on stdout.
@@ -1950,45 +1962,9 @@ fn run_health(
     json: bool,
     check: bool,
 ) -> Result<(), Failure> {
-    let not_checked = if check {
-        check_sources(socket)
-    } else {
-        Vec::new()
-    };
-    let mut report = HealthReport {
-        robot: None,
-        robot_error: None,
-        software: collect_version_report(socket, robot_socket, config_socket),
-        camera: proto::read_camera_stats(),
-        remote: proto::read_remote_status(),
-        account: Client::connect(socket)
-            .ok()
-            .and_then(|mut client| client.call(&proto::Call::AccountStatus).ok())
-            .and_then(|response| response.result_as::<proto::AccountStatusResult>().ok()),
-        board: BoardReport::read(),
-        read_at: unix_now(),
-    };
-    // Here rather than in `collect_version_report`, which `robotctl version` shares: `version`
-    // prints a component's name, release and revision and not the line this warning points at,
-    // so a robot that had gone quiet warned there about something nothing on screen said.
-    let quiet = quiet_source_warnings(&report.software.components);
-    report.software.warnings.extend(quiet);
-    report.software.warnings.extend(not_checked);
-    let board = report.board.warnings();
-    report.software.warnings.extend(board);
-
-    match Client::connect_to("robotd", robot_socket) {
-        Err(failure) => report.robot_error = Some(failure.message),
-        Ok(mut client) => match client.call(&proto::Call::RobotHealth) {
-            Err(failure) => report.robot_error = Some(failure.message),
-            Ok(response) => match response.result_as::<proto::HealthResult>() {
-                Ok(health) => report.robot = Some(health),
-                Err(e) => {
-                    report.robot_error =
-                        Some(format!("robotd answered robot.health unreadably: {e}"));
-                }
-            },
-        },
+    let mut report = collect_health_report(socket, robot_socket, config_socket);
+    if check {
+        report.software.warnings.extend(check_sources(socket));
     }
 
     if json {
@@ -2009,6 +1985,47 @@ fn run_health(
         // Nothing answered. Distinct again: there is no verdict to act on.
         None => Err(Failure::silent(exit::UNREACHABLE)),
     }
+}
+
+/// Gather the health report without printing or making the source check. Support bundles use the
+/// same evidence as `robotctl health`, so the two diagnostic surfaces cannot silently diverge.
+fn collect_health_report(socket: &Path, robot_socket: &Path, config_socket: &Path) -> HealthReport {
+    let mut report = HealthReport {
+        robot: None,
+        robot_error: None,
+        software: collect_version_report(socket, robot_socket, config_socket),
+        camera: proto::read_camera_stats(),
+        remote: proto::read_remote_status(),
+        account: Client::connect(socket)
+            .ok()
+            .and_then(|mut client| client.call(&proto::Call::AccountStatus).ok())
+            .and_then(|response| response.result_as::<proto::AccountStatusResult>().ok()),
+        board: BoardReport::read(),
+        read_at: unix_now(),
+    };
+    // Here rather than in `collect_version_report`, which `robotctl version` shares: `version`
+    // prints a component's name, release and revision and not the line this warning points at,
+    // so a robot that had gone quiet warned there about something nothing on screen said.
+    let quiet = quiet_source_warnings(&report.software.components);
+    report.software.warnings.extend(quiet);
+    let board = report.board.warnings();
+    report.software.warnings.extend(board);
+
+    match Client::connect_to("robotd", robot_socket) {
+        Err(failure) => report.robot_error = Some(failure.message),
+        Ok(mut client) => match client.call(&proto::Call::RobotHealth) {
+            Err(failure) => report.robot_error = Some(failure.message),
+            Ok(response) => match response.result_as::<proto::HealthResult>() {
+                Ok(health) => report.robot = Some(health),
+                Err(e) => {
+                    report.robot_error =
+                        Some(format!("robotd answered robot.health unreadably: {e}"));
+                }
+            },
+        },
+    }
+
+    report
 }
 
 /// The report as a human reads it: the verdict first, then the evidence, then the software.
@@ -5330,6 +5347,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             json,
         } => {
             return run_logs(&cli.config_socket, service, lines, boot, json);
+        }
+        Namespace::Support { command } => {
+            return support::run(&cli.socket, &cli.robot_socket, &cli.config_socket, command);
         }
         Namespace::Net { command } => {
             return run_net(&cli.config_socket, command);

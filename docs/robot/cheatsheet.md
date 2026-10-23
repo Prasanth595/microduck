@@ -32,6 +32,25 @@ it can gate a script — a hot motor or a pinned component is reported, not judg
 affect the exit code. `--json` for a support bundle; `--check` checks the update source first, so
 the line about it says whether it answers now.
 
+### A support bundle after a fault
+
+```
+robotctl support bundle ~/microduck-support
+```
+
+Creates a new directory with one fresh health report, daemon and installed versions, and the
+durable update status/history. It is read-only and intentionally excludes Wi-Fi configuration,
+account tokens, and journal excerpts. If a diagnosis needs the current journal too, opt in and
+review it before sharing: journal lines can include context from an operator's commands.
+
+```
+robotctl support bundle ~/microduck-support --include-logs --log-lines 300
+```
+
+The command never overwrites an existing directory. `manifest.json` records a partial collection
+when a daemon is unavailable, so a bundle from a broken robot is still useful rather than failing
+without an answer.
+
 ### Watching the loop
 
 ```

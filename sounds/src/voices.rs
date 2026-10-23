@@ -315,6 +315,78 @@ pub fn coo(p: &Personality, variant: u32) -> Vec<f32> {
     sig
 }
 
+/// A clear, high contact call: smoother and less buzzy than a chirp.
+pub fn whistle(p: &Personality, variant: u32) -> Vec<f32> {
+    let mut rng = p.variant_rng("whistle", variant);
+    let dur = (0.35 + 0.25 * rng.random()) / p.speed;
+    let t = s::t_axis(dur);
+    let f0 = p.pitch_center_hz * (1.55 + 0.45 * p.pitch_spread + 0.12 * rng.random());
+    let freq = s::lerp(&t, &[(0.0, f0 * 0.93), (dur * 0.55, f0 * 1.08), (dur, f0)]);
+    let env = s::bell(&t, dur * 0.08, dur * 0.32);
+    let mut clean = *p;
+    clean.quackiness *= 0.08;
+    clean.breath *= 0.15;
+    let mut sig: Vec<f32> = voice(&clean, &t, &freq, &mut rng, 0.0, 0.0)
+        .iter()
+        .zip(&env)
+        .map(|(&v, &e)| v * e)
+        .collect();
+    s::normalise(&mut sig, -6.0);
+    sig
+}
+
+/// A short three-note conversational trill, with per-duck timing and pitch variation.
+pub fn warble(p: &Personality, variant: u32) -> Vec<f32> {
+    let mut rng = p.variant_rng("warble", variant);
+    let base = p.pitch_center_hz * (0.85 + 0.30 * rng.random());
+    let mut out = Vec::new();
+    for multiplier in [1.0, 1.22 + 0.10 * rng.random(), 0.94 + 0.08 * rng.random()] {
+        let dur = (0.11 + 0.07 * rng.random()) / p.speed;
+        out.extend(chirp_syllable(
+            p,
+            &mut rng,
+            base * multiplier,
+            dur,
+            &[(0.0, 0.94), (dur, 1.06)],
+        ));
+        out.extend(std::iter::repeat_n(
+            0.0,
+            ((0.025 / p.speed) * f64::from(SR)) as usize,
+        ));
+    }
+    s::normalise(&mut out, -6.0);
+    out
+}
+
+/// An original electronic companion call: a bright, uneven sequence of short tone gestures.
+/// It deliberately uses this duck's own pitch, harmonic and timing traits rather than imitating
+/// a named character or sampled sound.
+pub fn signal(p: &Personality, variant: u32) -> Vec<f32> {
+    let mut rng = p.variant_rng("signal", variant);
+    let base = p.pitch_center_hz * (1.10 + 0.45 * rng.random());
+    let pattern = [0.82, 1.34, 1.07, 1.52];
+    let mut out = Vec::new();
+    for (index, multiplier) in pattern.into_iter().enumerate() {
+        let dur = (0.055 + 0.045 * rng.random()) / p.speed;
+        let t = s::t_axis(dur);
+        let f = base * multiplier * (0.96 + 0.08 * rng.random());
+        let bend = if index % 2 == 0 { 1.10 } else { 0.91 };
+        let freq = s::lerp(&t, &[(0.0, f), (dur, f * bend)]);
+        let env = s::bell(&t, dur * 0.12, dur * 0.25);
+        let mut electronic = *p;
+        electronic.quackiness *= 0.12;
+        electronic.breath = 0.0;
+        let tone = voice(&electronic, &t, &freq, &mut rng, 0.15, 0.0);
+        out.extend(tone.iter().zip(&env).map(|(&v, &e)| v * e));
+        out.extend(std::iter::repeat_n(
+            0.0,
+            ((0.018 + 0.025 * rng.random()) / p.speed * f64::from(SR)) as usize,
+        ));
+    }
+    s::normalise(&mut out, -7.0);
+    out
+}
+
 /// (start, loop, end) for the held-trigger joy ride on roller blades.
 ///
 /// Rendered as ONE continuous master and sliced, so jitter / breath / wobble carry across

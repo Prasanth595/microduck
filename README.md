@@ -74,6 +74,7 @@ It also sits, kicks a ball, rolls forward on command, and quacks in a voice that
 | [Cheat sheet](docs/robot/cheatsheet.md) | Every `robotctl` command: drive, configure, voice, chorale, theremin, wifi, updates, logs. Start here. |
 | [Gamepad](docs/robot/cheatsheet.md#gamepad-configd) | The full button mapping, and pairing a pad — [once per pad](docs/robot/pair-a-gamepad.md), plus what to do when it will not bond. |
 | [`duckctl`](docs/robot/duckctl.md) | The robot from a laptop over Bluetooth, with no network and no ssh. |
+| `robotctl support bundle <directory>` | A read-only support bundle with health, versions and update history. Add `--include-logs` only after reviewing the privacy warning. |
 | [Updates](docs/robot/cheatsheet.md#updates-updaterd) | Install, roll back, pin. Every update is verified, health-gated and reversible. |
 
 ### You are building on it
@@ -82,6 +83,7 @@ It also sits, kicks a ball, rolls forward on command, and quacks in a voice that
 |---|---|
 | [microduck_rl](https://github.com/pollen-robotics/microduck_rl) | Where the policies come from: MuJoCo, PPO, domain randomisation, and the ONNX export this repo loads. |
 | [How it works](docs/design/architecture.md) | The whole system on one page — the daemons, the bus, how an update reaches a robot — then a page per part. |
+| [MicroDuck 2.0 embodiment](docs/design/microduck-2-embodiment.md) | Proposed 15–20 in reference body, its new hardware profile, simulation and staged bring-up. Not a retrofit guide for the current duck. |
 | [Set up a dev board](docs/robot/install-dev.md) | From a blank board to a robot that takes branch builds. |
 | [Dev cheat sheet](docs/robot/cheatsheet-dev.md) | Branch builds, release candidates, driving from a laptop, and the restart traps after an update. |
 | [Push your branch](docs/robot/dev-push.md) | Build on your machine, install over ssh, about a minute. |

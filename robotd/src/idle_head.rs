@@ -30,6 +30,8 @@ use std::time::{Duration, Instant};
 
 use robotd_params::IdleParams;
 
+use crate::brain::{Brain, Stimulus};
+
 /// What the idle behaviour adds this tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct IdleOffset {
@@ -64,6 +66,9 @@ struct Look {
 #[derive(Debug)]
 pub struct IdleHead {
     tuning: IdleParams,
+    /// Owns the high-level decision about whether autonomous expression may be present. It
+    /// never owns a joint command; this module still applies the configured motion limits.
+    brain: Brain,
     rng: Rng,
     /// Since when nothing has asked the robot to move. `None` while something does.
     still_since: Option<Instant>,
@@ -88,6 +93,7 @@ impl IdleHead {
         let phases = [0; 4].map(|_| rng.unit() * TAU);
         Self {
             tuning,
+            brain: Brain::default(),
             rng,
             still_since: None,
             gain: 0.0,
@@ -108,7 +114,15 @@ impl IdleHead {
     /// counts.
     pub fn tick(&mut self, now: Instant, still: bool, dt: Duration) -> IdleOffset {
         let p = self.tuning;
-        self.still_since = if still && p.enabled {
+        // Direct control is a first-class stimulus. A yielding decision withdraws the idle
+        // expression through its normal fade rather than issuing a competing head command.
+        let decision = self.brain.decide(if still {
+            Stimulus::Idle
+        } else {
+            Stimulus::HumanControl
+        });
+        let autonomous_expression = decision.permits_autonomous_expression();
+        self.still_since = if still && autonomous_expression && p.enabled {
             Some(self.still_since.unwrap_or(now))
         } else {
             None

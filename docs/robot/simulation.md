@@ -71,6 +71,25 @@ scripts/duck-sim realtime       # how fast the world is running (see below)
 scripts/duck-sim down
 ```
 
+### MicroDuck 2.0 reference body
+
+The alpha model and its ONNX policies are **not compatible** with the larger body. The 2.0
+reference profile is a separate, original primitive MuJoCo body at 45 cm standing height and 3.2 kg
+nominal mass; it supplies the same daemon/body protocol, joint names, IMU and ToF interfaces so
+control-path development can begin before CAD is complete.
+
+```sh
+DUCK_SIM_RL=/path/to/microduck-2.0-rl DUCK_SIM_PROFILE=microduck2 \
+  DUCK_SIM_VIEWER=0 scripts/duck-sim
+```
+
+It starts at `HOME`, not the alpha's `SIT` keyframe. It has **no compatible walking policy** and
+therefore validates body-server connectivity, sensing, faults, learning-event capture, safe stop
+and future behavior scenarios — not locomotion. The scene includes a 60 mm `learning_low_obstacle`
+fixture as a perception/training target only. Do not describe a policy as step-over capable until
+it is trained for this exact body, evaluated in simulation and then subjected to supervised
+hardware validation.
+
 Without an argument the script builds the daemons from the branch you are on, writes a params file
 naming the policies in this repo, starts `duck-body`, `tofd --sim` and `robotd --sim` under
 `~/.cache/duck-sim`, and enables the standing policy. `ctl` is `robotctl` pointed at that duck's

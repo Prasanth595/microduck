@@ -2327,6 +2327,12 @@ pub enum SoundTag {
     Chirp,
     /// Drowsy, breathy — the petting response.
     Coo,
+    /// Clear high contact call.
+    Whistle,
+    /// Three-note conversational trill.
+    Warble,
+    /// Original electronic companion call.
+    Signal,
     /// The held joy ride: start → loop while held → end.
     Wheee,
 }
@@ -2341,6 +2347,9 @@ impl SoundTag {
             SoundTag::Peck => "peck",
             SoundTag::Chirp => "chirp",
             SoundTag::Coo => "coo",
+            SoundTag::Whistle => "whistle",
+            SoundTag::Warble => "warble",
+            SoundTag::Signal => "signal",
             SoundTag::Wheee => "wheee",
         }
     }
